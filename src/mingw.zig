@@ -505,14 +505,12 @@ fn findDef(comp: *Compilation, allocator: Allocator, lib_name: []const u8) ![]u8
 }
 
 const mingw32_lib_deps = [_][]const u8{
-    "crt0_c.c",
     "dll_argv.c",
     "gccmain.c",
     "natstart.c",
     "pseudo-reloc-list.c",
     "wildcard.c",
     "charmax.c",
-    "crt0_w.c",
     "dllargv.c",
     "_newmode.c",
     "tlssup.c",
@@ -684,7 +682,6 @@ const mingwex_generic_src = [_][]const u8{
     "gdtoa" ++ path.sep_str ++ "strtopx.c",
     "gdtoa" ++ path.sep_str ++ "sum.c",
     "gdtoa" ++ path.sep_str ++ "ulp.c",
-    "math" ++ path.sep_str ++ "abs64.c",
     "math" ++ path.sep_str ++ "cbrt.c",
     "math" ++ path.sep_str ++ "cbrtf.c",
     "math" ++ path.sep_str ++ "cbrtl.c",
@@ -825,10 +822,6 @@ const mingwex_generic_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "tfind.c",
     "misc" ++ path.sep_str ++ "tsearch.c",
     "misc" ++ path.sep_str ++ "twalk.c",
-    "misc" ++ path.sep_str ++ "uchar_c16rtomb.c",
-    "misc" ++ path.sep_str ++ "uchar_c32rtomb.c",
-    "misc" ++ path.sep_str ++ "uchar_mbrtoc16.c",
-    "misc" ++ path.sep_str ++ "uchar_mbrtoc32.c",
     "misc" ++ path.sep_str ++ "wcrtomb.c",
     "misc" ++ path.sep_str ++ "wcsnlen.c",
     "misc" ++ path.sep_str ++ "wcstof.c",
