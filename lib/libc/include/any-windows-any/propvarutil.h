@@ -71,6 +71,7 @@ typedef int PROPVAR_COMPARE_FLAGS;
 HRESULT WINAPI PropVariantChangeType(PROPVARIANT *ppropvarDest, REFPROPVARIANT propvarSrc,
                                      PROPVAR_CHANGE_FLAGS flags, VARTYPE vt);
 HRESULT WINAPI InitPropVariantFromGUIDAsString(REFGUID guid, PROPVARIANT *ppropvar);
+HRESULT WINAPI InitVariantFromFileTime(const FILETIME *ft, VARIANT *var);
 HRESULT WINAPI InitVariantFromGUIDAsString(REFGUID guid, VARIANT *pvar);
 HRESULT WINAPI InitPropVariantFromBuffer(const VOID *pv, UINT cb, PROPVARIANT *ppropvar);
 HRESULT WINAPI InitPropVariantFromCLSID(REFCLSID clsid, PROPVARIANT *ppropvar);
@@ -80,6 +81,7 @@ HRESULT WINAPI VariantToGUID(const VARIANT *pvar, GUID *guid);
 INT WINAPI PropVariantCompareEx(REFPROPVARIANT propvar1, REFPROPVARIANT propvar2,
                                 PROPVAR_COMPARE_UNIT uint, PROPVAR_COMPARE_FLAGS flags);
 HRESULT WINAPI InitPropVariantFromFileTime(const FILETIME *pftIn, PROPVARIANT *ppropvar);
+HRESULT WINAPI InitPropVariantFromStringVector(PCWSTR *strs, ULONG count, PROPVARIANT *ppropvar);
 
 HRESULT WINAPI PropVariantToDouble(REFPROPVARIANT propvarIn, double *ret);
 HRESULT WINAPI PropVariantToInt16(REFPROPVARIANT propvarIn, SHORT *ret);
@@ -92,6 +94,7 @@ HRESULT WINAPI PropVariantToBoolean(REFPROPVARIANT propvarIn, WINBOOL *ret);
 HRESULT WINAPI PropVariantToBuffer(REFPROPVARIANT propvarIn, void *ret, UINT cb);
 HRESULT WINAPI PropVariantToString(REFPROPVARIANT propvarIn, PWSTR ret, UINT cch);
 PCWSTR WINAPI PropVariantToStringWithDefault(REFPROPVARIANT propvarIn, LPCWSTR pszDefault);
+PCWSTR WINAPI VariantToStringWithDefault(const VARIANT *pvar, LPCWSTR pszDefault);
 
 HRESULT WINAPI PropVariantToStringAlloc(REFPROPVARIANT propvarIn, WCHAR **ret);
 
@@ -203,6 +206,8 @@ inline WINBOOL IsPropVariantString(REFPROPVARIANT propvar)
 #endif /* NO_PROPVAR_INLINES */
 #endif /* __cplusplus */
 
+HRESULT WINAPI StgSerializePropVariant(const PROPVARIANT *ppropvar, SERIALIZEDPROPERTYVALUE **ppprop, ULONG *pcb);
+HRESULT WINAPI StgDeserializePropVariant(const SERIALIZEDPROPERTYVALUE *pprop, ULONG cbmax, PROPVARIANT *ppropvar);
 
 #ifdef __cplusplus
 }
