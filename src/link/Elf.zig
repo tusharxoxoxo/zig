@@ -1818,29 +1818,7 @@ fn scanRelocs(self: *Elf) !void {
 
 fn allocateObjects(self: *Elf) !void {
     for (self.objects.items) |index| {
-        const object = self.file(index).?.object;
-
-        for (object.atoms.items) |atom_index| {
-            const atom_ptr = self.atom(atom_index) orelse continue;
-            if (!atom_ptr.flags.alive or atom_ptr.flags.allocated) continue;
-            try atom_ptr.allocate(self);
-        }
-
-        for (object.locals()) |local_index| {
-            const local = self.symbol(local_index);
-            const atom_ptr = local.atom(self) orelse continue;
-            if (!atom_ptr.flags.alive) continue;
-            local.value = local.elfSym(self).st_value + atom_ptr.value;
-        }
-
-        for (object.globals()) |global_index| {
-            const global = self.symbol(global_index);
-            const atom_ptr = global.atom(self) orelse continue;
-            if (!atom_ptr.flags.alive) continue;
-            if (global.file_index == index) {
-                global.value = global.elfSym(self).st_value + atom_ptr.value;
-            }
-        }
+        try self.file(index).?.object.allocate(self);
     }
 }
 

@@ -648,6 +648,33 @@ pub fn convertCommonSymbols(self: *Object, elf_file: *Elf) !void {
     }
 }
 
+pub fn allocate(self: *Object, elf_file: *Elf) !void {
+    for (self.atom_slices.keys(), self.atom_slices.values()) |shndx, *slice| {
+        // First, we calculate relative offsets within each AtomSlice,
+        // and update its size and max alignment.
+        slice.updateSize(elf_file);
+
+        // Next, we allocate AtomSlice in the output section.
+        try slice.allocate(self, shndx, elf_file);
+    }
+
+    for (self.locals()) |local_index| {
+        const local = elf_file.symbol(local_index);
+        const atom = local.atom(elf_file) orelse continue;
+        if (!atom.flags.alive) continue;
+        local.value += atom.value;
+    }
+
+    for (self.globals()) |global_index| {
+        const global = elf_file.symbol(global_index);
+        const atom = global.atom(elf_file) orelse continue;
+        if (!atom.flags.alive) continue;
+        if (global.file_index == self.index) {
+            global.value += atom.value;
+        }
+    }
+}
+
 pub fn updateSymtabSize(self: *Object, elf_file: *Elf) void {
     for (self.locals()) |local_index| {
         const local = elf_file.symbol(local_index);
@@ -854,7 +881,7 @@ fn formatAtomSlices(
     const object = ctx.object;
     try writer.writeAll("  atom slices\n");
     for (object.atom_slices.keys(), object.atom_slices.values()) |shndx, slice| {
-        try writer.print("    shdr({d}) : prev({d}) : next({d})\n", .{ shndx, slice.prev_index, slice.next_index });
+        try writer.print("    shdr({d})\n", .{shndx});
         for (slice.atoms.items) |atom_index| {
             try writer.print("      atom({d})\n", .{atom_index});
         }
@@ -957,12 +984,70 @@ fn formatPath(
 }
 
 const AtomSlice = struct {
+    value: u64 = 0,
+    size: u64 = 0,
+    alignment: Atom.Alignment = .@"1",
+
     /// List of atoms contained within this section slice.
     atoms: std.ArrayListUnmanaged(Atom.Index) = .{},
 
-    /// Points to the previous and next neighbors of this section slice.
-    prev_index: Atom.Index = 0,
-    next_index: Atom.Index = 0,
+    pub fn updateSize(slice: *AtomSlice, elf_file: *Elf) void {
+        var prev_index: Atom.Index = 0;
+
+        for (slice.atoms.items) |atom_index| {
+            const atom = elf_file.atom(atom_index) orelse continue;
+            if (!atom.flags.alive) continue;
+            const offset = atom.alignment.forward(slice.size);
+            const padding = offset - slice.size;
+            atom.value = offset;
+            slice.size += padding + atom.size;
+            slice.alignment = slice.alignment.max(atom.alignment);
+
+            // TODO once we make AtomSlice a subtype of Atom this will become obsolete.
+            atom.prev_index = prev_index;
+            if (elf_file.atom(prev_index)) |prev| {
+                prev.next_index = atom_index;
+            }
+
+            prev_index = atom_index;
+        }
+    }
+
+    pub fn allocate(slice: *AtomSlice, object: *Object, shndx: u16, elf_file: *Elf) !void {
+        if (slice.size == 0) return;
+
+        // TODO it is clear by now that we want AtomSlice to share interface with Atom
+        // and thus we should have different types depending on the origin: incrementally updated
+        // Decl will be our current Atom, while AtomSlice will represent a chunk of data linked from
+        // the object file.
+        const first_atom_index = slice.atoms.items[0];
+        const last_atom_index = slice.atoms.items[slice.atoms.items.len - 1];
+        var dummy_atom: Atom = .{};
+        dummy_atom.file_index = object.index;
+        dummy_atom.size = slice.size;
+        dummy_atom.alignment = slice.alignment;
+        dummy_atom.output_section_index = shndx;
+        dummy_atom.atom_index = last_atom_index;
+        try dummy_atom.allocate(elf_file);
+
+        slice.value = dummy_atom.value;
+
+        if (elf_file.atom(dummy_atom.prev_index)) |prev| {
+            prev.next_index = first_atom_index;
+        }
+        if (elf_file.atom(dummy_atom.next_index)) |next| {
+            next.prev_index = last_atom_index;
+        }
+        elf_file.atom(first_atom_index).?.prev_index = dummy_atom.prev_index;
+        elf_file.atom(last_atom_index).?.next_index = dummy_atom.next_index;
+
+        for (slice.atoms.items) |atom_index| {
+            const atom = elf_file.atom(atom_index) orelse continue;
+            if (!atom.flags.alive) continue;
+            atom.value += slice.value;
+            atom.flags.allocated = true;
+        }
+    }
 };
 
 const Object = @This();
