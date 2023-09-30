@@ -1818,31 +1818,13 @@ fn scanRelocs(self: *Elf) !void {
 
 fn allocateObjects(self: *Elf) !void {
     for (self.objects.items) |index| {
-        try self.file(index).?.object.allocate(self);
+        try self.file(index).?.object.allocateAtoms(self);
     }
 }
 
 fn writeObjects(self: *Elf) !void {
-    const gpa = self.base.allocator;
-
     for (self.objects.items) |index| {
-        const object = self.file(index).?.object;
-        for (object.atoms.items) |atom_index| {
-            const atom_ptr = self.atom(atom_index) orelse continue;
-            if (!atom_ptr.flags.alive) continue;
-
-            const shdr = &self.shdrs.items[atom_ptr.outputShndx().?];
-            if (shdr.sh_type == elf.SHT_NOBITS) continue;
-            if (shdr.sh_flags & elf.SHF_ALLOC == 0) continue; // TODO we don't yet know how to handle non-alloc sections
-
-            const file_offset = shdr.sh_offset + atom_ptr.value - shdr.sh_addr;
-            log.debug("writing atom({d}) at 0x{x}", .{ atom_ptr.atom_index, file_offset });
-            const code = try object.codeDecompressAlloc(self, atom_ptr.atom_index);
-            defer gpa.free(code);
-
-            try atom_ptr.resolveRelocs(self, code);
-            try self.base.file.?.pwriteAll(code, file_offset);
-        }
+        try self.file(index).?.object.writeAtoms(self);
     }
 }
 

@@ -648,7 +648,7 @@ pub fn convertCommonSymbols(self: *Object, elf_file: *Elf) !void {
     }
 }
 
-pub fn allocate(self: *Object, elf_file: *Elf) !void {
+pub fn allocateAtoms(self: *Object, elf_file: *Elf) !void {
     for (self.atom_slices.keys(), self.atom_slices.values()) |shndx, *slice| {
         // First, we calculate relative offsets within each AtomSlice,
         // and update its size and max alignment.
@@ -672,6 +672,27 @@ pub fn allocate(self: *Object, elf_file: *Elf) !void {
         if (global.file_index == self.index) {
             global.value += atom.value;
         }
+    }
+}
+
+pub fn writeAtoms(self: Object, elf_file: *Elf) !void {
+    const gpa = elf_file.base.allocator;
+
+    for (self.atom_slices.keys(), self.atom_slices.values(), 0..) |shndx, *slice, index| {
+        const shdr = elf_file.shdrs.items[shndx];
+        if (shdr.sh_type == elf.SHT_NOBITS) continue;
+        if (shdr.sh_flags & elf.SHF_ALLOC == 0) continue; // TODO we don't yet know how to handle non-alloc sections
+        if (slice.size == 0) continue;
+
+        const file_offset = shdr.sh_offset + slice.value - shdr.sh_addr;
+        log.debug("writing atom_slice({d}) at 0x{x}", .{ index, file_offset });
+
+        const code = try gpa.alloc(u8, slice.size);
+        defer gpa.free(code);
+        @memset(code, 0); // TODO NOP
+
+        try slice.write(self, elf_file, code);
+        try elf_file.base.file.?.pwriteAll(code, file_offset);
     }
 }
 
@@ -745,7 +766,7 @@ fn shdrContents(self: Object, index: u32) error{Overflow}![]const u8 {
 
 /// Returns atom's code and optionally uncompresses data if required (for compressed sections).
 /// Caller owns the memory.
-pub fn codeDecompressAlloc(self: Object, elf_file: *Elf, atom_index: Atom.Index) ![]u8 {
+fn codeDecompressAlloc(self: Object, elf_file: *Elf, atom_index: Atom.Index) ![]u8 {
     const gpa = elf_file.base.allocator;
     const atom_ptr = elf_file.atom(atom_index).?;
     assert(atom_ptr.file_index == self.index);
@@ -880,11 +901,8 @@ fn formatAtomSlices(
     _ = options;
     const object = ctx.object;
     try writer.writeAll("  atom slices\n");
-    for (object.atom_slices.keys(), object.atom_slices.values()) |shndx, slice| {
-        try writer.print("    shdr({d})\n", .{shndx});
-        for (slice.atoms.items) |atom_index| {
-            try writer.print("      atom({d})\n", .{atom_index});
-        }
+    for (object.atom_slices.values()) |slice| {
+        try writer.print("    {}\n", .{slice.fmt(ctx.elf_file)});
     }
 }
 
@@ -984,6 +1002,7 @@ fn formatPath(
 }
 
 const AtomSlice = struct {
+    index: u16 = 0,
     value: u64 = 0,
     size: u64 = 0,
     alignment: Atom.Alignment = .@"1",
@@ -1046,6 +1065,67 @@ const AtomSlice = struct {
             if (!atom.flags.alive) continue;
             atom.value += slice.value;
             atom.flags.allocated = true;
+        }
+    }
+
+    pub fn write(slice: AtomSlice, object: Object, elf_file: *Elf, buffer: []u8) !void {
+        for (slice.atoms.items) |atom_index| {
+            const atom = elf_file.atom(atom_index) orelse continue;
+            if (!atom.flags.alive) continue;
+
+            const offset = atom.value - slice.value;
+
+            // TODO rework this so that we push straight into the buffer
+            const code = try object.codeDecompressAlloc(elf_file, atom_index);
+            defer elf_file.base.allocator.free(code);
+
+            try atom.resolveRelocs(elf_file, code);
+            @memcpy(buffer[offset..][0..code.len], code);
+        }
+    }
+
+    const AtomSliceFormatContext = struct {
+        slice: AtomSlice,
+        elf_file: *Elf,
+    };
+
+    pub fn format(
+        self: AtomSlice,
+        comptime unused_fmt_string: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = self;
+        _ = unused_fmt_string;
+        _ = options;
+        _ = writer;
+        @compileError("do not format AtomSlice directly");
+    }
+
+    pub fn fmt(slice: AtomSlice, elf_file: *Elf) std.fmt.Formatter(format2) {
+        return .{ .data = .{
+            .slice = slice,
+            .elf_file = elf_file,
+        } };
+    }
+
+    fn format2(
+        ctx: AtomSliceFormatContext,
+        comptime unused_fmt_string: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+        _ = unused_fmt_string;
+        const slice = ctx.slice;
+        const shndx = if (slice.atoms.items.len > 0) slice.atoms.items[0] else 0;
+        try writer.print("atom_slice({d}) : @{x} : shdr({d}) : align({x}) : size({x})", .{
+            slice.index, slice.value,
+            shndx,       slice.alignment,
+            slice.size,
+        });
+        for (slice.atoms.items) |atom_index| {
+            try writer.print("      atom({d})\n", .{atom_index});
         }
     }
 };
