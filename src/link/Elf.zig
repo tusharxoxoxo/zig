@@ -4293,8 +4293,9 @@ fn fmtDumpState(
         try writer.print("object({d}) : {}", .{ index, object.fmtPath() });
         if (!object.alive) try writer.writeAll(" : [*]");
         try writer.writeByte('\n');
-        try writer.print("{}{}{}{}{}\n", .{
+        try writer.print("{}{}{}{}{}{}\n", .{
             object.fmtAtoms(self),
+            object.fmtAtomSlices(self),
             object.fmtCies(self),
             object.fmtFdes(self),
             object.fmtSymtab(self),

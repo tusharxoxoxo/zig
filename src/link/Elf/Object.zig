@@ -12,6 +12,15 @@ first_global: ?Symbol.Index = null,
 
 symbols: std.ArrayListUnmanaged(Symbol.Index) = .{},
 atoms: std.ArrayListUnmanaged(Atom.Index) = .{},
+/// Input relocatable object files will never have their input sections (atoms)
+/// updated incrementally. If anything, the entire contents of the object file
+/// will need to be re-linked. For that reason, it is wasted effort to allocate
+/// each atom individually. Instead, we allocate all atoms in corresponding sections
+/// in bulk, first by assigning them relative offsets within the output section, to
+/// then copy that into the actual output section and write to file.
+/// We do this via AtomSlice abstaction.
+/// The table is indexed by the output section index.
+atom_slices: std.AutoArrayHashMapUnmanaged(u16, AtomSlice) = .{},
 comdat_groups: std.ArrayListUnmanaged(Elf.ComdatGroup.Index) = .{},
 
 fdes: std.ArrayListUnmanaged(Fde) = .{},
@@ -42,6 +51,7 @@ pub fn deinit(self: *Object, allocator: Allocator) void {
     self.comdat_groups.deinit(allocator);
     self.fdes.deinit(allocator);
     self.cies.deinit(allocator);
+    self.atom_slices.deinit(allocator);
 }
 
 pub fn parse(self: *Object, elf_file: *Elf) !void {
@@ -173,10 +183,11 @@ fn addAtom(
     name: [:0]const u8,
     elf_file: *Elf,
 ) error{ OutOfMemory, Overflow }!void {
+    const gpa = elf_file.base.allocator;
     const atom_index = try elf_file.addAtom();
     const atom = elf_file.atom(atom_index).?;
     atom.atom_index = atom_index;
-    atom.name_offset = try elf_file.strtab.insert(elf_file.base.allocator, name);
+    atom.name_offset = try elf_file.strtab.insert(gpa, name);
     atom.file_index = self.index;
     atom.input_section_index = shndx;
     atom.output_section_index = try self.getOutputSectionIndex(elf_file, shdr);
@@ -192,6 +203,11 @@ fn addAtom(
         atom.size = shdr.sh_size;
         atom.alignment = Alignment.fromNonzeroByteUnits(shdr.sh_addralign);
     }
+
+    // Put the atom in its appropriate AtomSlice.
+    const gop = try self.atom_slices.getOrPut(gpa, atom.output_section_index);
+    if (!gop.found_existing) gop.value_ptr.* = .{};
+    try gop.value_ptr.atoms.append(gpa, atom_index);
 }
 
 fn getOutputSectionIndex(self: *Object, elf_file: *Elf, shdr: elf.Elf64_Shdr) error{OutOfMemory}!u16 {
@@ -682,12 +698,12 @@ pub fn writeSymtab(self: *Object, elf_file: *Elf, ctx: anytype) void {
     }
 }
 
-pub fn locals(self: *Object) []const Symbol.Index {
+pub fn locals(self: Object) []const Symbol.Index {
     const end = self.first_global orelse self.symbols.items.len;
     return self.symbols.items[0..end];
 }
 
-pub fn globals(self: *Object) []const Symbol.Index {
+pub fn globals(self: Object) []const Symbol.Index {
     const start = self.first_global orelse self.symbols.items.len;
     return self.symbols.items[start..];
 }
@@ -729,12 +745,12 @@ pub fn codeDecompressAlloc(self: Object, elf_file: *Elf, atom_index: Atom.Index)
     } else return gpa.dupe(u8, data);
 }
 
-fn getString(self: *Object, off: u32) [:0]const u8 {
+fn getString(self: Object, off: u32) [:0]const u8 {
     assert(off < self.strtab.len);
     return mem.sliceTo(@as([*:0]const u8, @ptrCast(self.strtab.ptr + off)), 0);
 }
 
-pub fn comdatGroupMembers(self: *Object, index: u16) error{Overflow}![]align(1) const u32 {
+pub fn comdatGroupMembers(self: Object, index: u16) error{Overflow}![]align(1) const u32 {
     const raw = try self.shdrContents(index);
     const nmembers = @divExact(raw.len, @sizeOf(u32));
     const members = @as([*]align(1) const u32, @ptrCast(raw.ptr))[1..nmembers];
@@ -752,7 +768,7 @@ pub fn getRelocs(self: *Object, shndx: u32) error{Overflow}![]align(1) const elf
 }
 
 pub fn format(
-    self: *Object,
+    self: Object,
     comptime unused_fmt_string: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
@@ -764,7 +780,7 @@ pub fn format(
     @compileError("do not format objects directly");
 }
 
-pub fn fmtSymtab(self: *Object, elf_file: *Elf) std.fmt.Formatter(formatSymtab) {
+pub fn fmtSymtab(self: Object, elf_file: *Elf) std.fmt.Formatter(formatSymtab) {
     return .{ .data = .{
         .object = self,
         .elf_file = elf_file,
@@ -772,7 +788,7 @@ pub fn fmtSymtab(self: *Object, elf_file: *Elf) std.fmt.Formatter(formatSymtab) 
 }
 
 const FormatContext = struct {
-    object: *Object,
+    object: Object,
     elf_file: *Elf,
 };
 
@@ -797,7 +813,7 @@ fn formatSymtab(
     }
 }
 
-pub fn fmtAtoms(self: *Object, elf_file: *Elf) std.fmt.Formatter(formatAtoms) {
+pub fn fmtAtoms(self: Object, elf_file: *Elf) std.fmt.Formatter(formatAtoms) {
     return .{ .data = .{
         .object = self,
         .elf_file = elf_file,
@@ -820,7 +836,32 @@ fn formatAtoms(
     }
 }
 
-pub fn fmtCies(self: *Object, elf_file: *Elf) std.fmt.Formatter(formatCies) {
+pub fn fmtAtomSlices(self: Object, elf_file: *Elf) std.fmt.Formatter(formatAtomSlices) {
+    return .{ .data = .{
+        .object = self,
+        .elf_file = elf_file,
+    } };
+}
+
+fn formatAtomSlices(
+    ctx: FormatContext,
+    comptime unused_fmt_string: []const u8,
+    options: std.fmt.FormatOptions,
+    writer: anytype,
+) !void {
+    _ = unused_fmt_string;
+    _ = options;
+    const object = ctx.object;
+    try writer.writeAll("  atom slices\n");
+    for (object.atom_slices.keys(), object.atom_slices.values()) |shndx, slice| {
+        try writer.print("    shdr({d}) : prev({d}) : next({d})\n", .{ shndx, slice.prev_index, slice.next_index });
+        for (slice.atoms.items) |atom_index| {
+            try writer.print("      atom({d})\n", .{atom_index});
+        }
+    }
+}
+
+pub fn fmtCies(self: Object, elf_file: *Elf) std.fmt.Formatter(formatCies) {
     return .{ .data = .{
         .object = self,
         .elf_file = elf_file,
@@ -842,7 +883,7 @@ fn formatCies(
     }
 }
 
-pub fn fmtFdes(self: *Object, elf_file: *Elf) std.fmt.Formatter(formatFdes) {
+pub fn fmtFdes(self: Object, elf_file: *Elf) std.fmt.Formatter(formatFdes) {
     return .{ .data = .{
         .object = self,
         .elf_file = elf_file,
@@ -864,7 +905,7 @@ fn formatFdes(
     }
 }
 
-pub fn fmtComdatGroups(self: *Object, elf_file: *Elf) std.fmt.Formatter(formatComdatGroups) {
+pub fn fmtComdatGroups(self: Object, elf_file: *Elf) std.fmt.Formatter(formatComdatGroups) {
     return .{ .data = .{
         .object = self,
         .elf_file = elf_file,
@@ -895,12 +936,12 @@ fn formatComdatGroups(
     }
 }
 
-pub fn fmtPath(self: *Object) std.fmt.Formatter(formatPath) {
+pub fn fmtPath(self: Object) std.fmt.Formatter(formatPath) {
     return .{ .data = self };
 }
 
 fn formatPath(
-    object: *Object,
+    object: Object,
     comptime unused_fmt_string: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
@@ -914,6 +955,15 @@ fn formatPath(
         try writer.writeByte(')');
     } else try writer.writeAll(object.path);
 }
+
+const AtomSlice = struct {
+    /// List of atoms contained within this section slice.
+    atoms: std.ArrayListUnmanaged(Atom.Index) = .{},
+
+    /// Points to the previous and next neighbors of this section slice.
+    prev_index: Atom.Index = 0,
+    next_index: Atom.Index = 0,
+};
 
 const Object = @This();
 
