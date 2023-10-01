@@ -206,7 +206,7 @@ fn addAtom(
 
     // Put the atom in its appropriate AtomSlice.
     const gop = try self.atom_slices.getOrPut(gpa, atom.output_section_index);
-    if (!gop.found_existing) gop.value_ptr.* = .{};
+    if (!gop.found_existing) gop.value_ptr.* = .{ .output_section_index = atom.output_section_index };
     try gop.value_ptr.atoms.append(gpa, atom_index);
 }
 
@@ -662,7 +662,7 @@ pub fn allocateAtoms(self: *Object, elf_file: *Elf) !void {
         const local = elf_file.symbol(local_index);
         const atom = local.atom(elf_file) orelse continue;
         if (!atom.flags.alive) continue;
-        local.value += atom.value;
+        local.value = local.elfSym(elf_file).st_value + atom.value;
     }
 
     for (self.globals()) |global_index| {
@@ -670,7 +670,7 @@ pub fn allocateAtoms(self: *Object, elf_file: *Elf) !void {
         const atom = global.atom(elf_file) orelse continue;
         if (!atom.flags.alive) continue;
         if (global.file_index == self.index) {
-            global.value += atom.value;
+            global.value = global.elfSym(elf_file).st_value + atom.value;
         }
     }
 }
@@ -685,7 +685,7 @@ pub fn writeAtoms(self: Object, elf_file: *Elf) !void {
         if (slice.size == 0) continue;
 
         const file_offset = shdr.sh_offset + slice.value - shdr.sh_addr;
-        log.debug("writing atom_slice({d}) at 0x{x}", .{ index, file_offset });
+        log.debug("writing atom_slice({d}) in object({d}) at 0x{x}", .{ index, self.index, file_offset });
 
         const code = try gpa.alloc(u8, slice.size);
         defer gpa.free(code);
@@ -1001,11 +1001,13 @@ fn formatPath(
     } else try writer.writeAll(object.path);
 }
 
-const AtomSlice = struct {
+pub const AtomSlice = struct {
     index: u16 = 0,
     value: u64 = 0,
     size: u64 = 0,
     alignment: Atom.Alignment = .@"1",
+    output_section_index: u16 = 0,
+    allocated: bool = false,
 
     /// List of atoms contained within this section slice.
     atoms: std.ArrayListUnmanaged(Atom.Index) = .{},
@@ -1034,6 +1036,7 @@ const AtomSlice = struct {
 
     pub fn allocate(slice: *AtomSlice, object: *Object, shndx: u16, elf_file: *Elf) !void {
         if (slice.size == 0) return;
+        assert(!slice.allocated);
 
         // TODO it is clear by now that we want AtomSlice to share interface with Atom
         // and thus we should have different types depending on the origin: incrementally updated
@@ -1066,6 +1069,8 @@ const AtomSlice = struct {
             atom.value += slice.value;
             atom.flags.allocated = true;
         }
+
+        slice.allocated = true;
     }
 
     pub fn write(slice: AtomSlice, object: Object, elf_file: *Elf, buffer: []u8) !void {
@@ -1074,6 +1079,7 @@ const AtomSlice = struct {
             if (!atom.flags.alive) continue;
 
             const offset = atom.value - slice.value;
+            log.debug("{x} - {x} = {x}", .{ atom.value, slice.value, offset });
 
             // TODO rework this so that we push straight into the buffer
             const code = try object.codeDecompressAlloc(elf_file, atom_index);
@@ -1118,10 +1124,9 @@ const AtomSlice = struct {
         _ = options;
         _ = unused_fmt_string;
         const slice = ctx.slice;
-        const shndx = if (slice.atoms.items.len > 0) slice.atoms.items[0] else 0;
-        try writer.print("atom_slice({d}) : @{x} : shdr({d}) : align({x}) : size({x})", .{
-            slice.index, slice.value,
-            shndx,       slice.alignment,
+        try writer.print("atom_slice({d}) : @{x} : shdr({d}) : align({x}) : size({x})\n", .{
+            slice.index,                slice.value,
+            slice.output_section_index, slice.alignment,
             slice.size,
         });
         for (slice.atoms.items) |atom_index| {

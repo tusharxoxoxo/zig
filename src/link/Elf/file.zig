@@ -97,6 +97,14 @@ pub const File = union(enum) {
         };
     }
 
+    pub fn atomSlices(file: File) []Object.AtomSlice {
+        return switch (file) {
+            .linker_defined => unreachable,
+            .zig_module => &[0]Object.AtomSlice{},
+            .object => |x| x.atom_slices.values(),
+        };
+    }
+
     pub fn locals(file: File) []const Symbol.Index {
         return switch (file) {
             .linker_defined => unreachable,

@@ -113,7 +113,7 @@ phdr_table_dirty: bool = false,
 shdr_table_dirty: bool = false,
 shstrtab_dirty: bool = false,
 strtab_dirty: bool = false,
-got_dirty: bool = false,
+got_addresses_dirty: bool = false,
 
 debug_strtab_dirty: bool = false,
 debug_abbrev_section_dirty: bool = false,
@@ -438,13 +438,14 @@ pub fn allocateSegment(self: *Elf, opts: AllocateSegmentOpts) error{OutOfMemory}
     // TODO we want to keep machine code segment in the furthest memory range among all
     // segments as it is most likely to grow.
     const addr = opts.addr orelse blk: {
-        const reserved_capacity = self.calcImageBase() * 4;
+        const image_base = self.calcImageBase();
         // Calculate largest VM address
         var addresses = std.ArrayList(u64).init(gpa);
         defer addresses.deinit();
         try addresses.ensureTotalCapacityPrecise(self.phdrs.items.len);
         for (self.phdrs.items) |phdr| {
             if (phdr.p_type != elf.PT_LOAD) continue;
+            const reserved_capacity: u64 = @max(phdr.p_memsz, image_base * 3) + image_base;
             addresses.appendAssumeCapacity(phdr.p_vaddr + reserved_capacity);
         }
         mem.sort(u64, addresses.items, {}, std.sort.asc(u64));
@@ -941,7 +942,7 @@ pub fn growAllocSection(self: *Elf, shdr_index: u16, needed_size: u64) !void {
         // and grow.
         {
             const dirty_addr = phdr.p_vaddr + phdr.p_memsz;
-            self.got_dirty = for (self.got.entries.items) |entry| {
+            self.got_addresses_dirty = for (self.got.entries.items) |entry| {
                 if (self.symbol(entry.symbol_index).value >= dirty_addr) break true;
             } else false;
 
@@ -1007,6 +1008,12 @@ fn growSegment(self: *Elf, shndx: u16, needed_size: u64) !void {
             if (!atom_ptr.flags.alive or !atom_ptr.flags.allocated) continue;
             if (atom_ptr.value >= end_addr) atom_ptr.value += diff;
         }
+
+        for (file_ptr.atomSlices()) |*slice| {
+            if (slice.size == 0) continue;
+            if (!slice.allocated) continue;
+            if (slice.value >= end_addr) slice.value += diff;
+        }
     }
 
     // Finally, update section headers.
@@ -1015,10 +1022,12 @@ fn growSegment(self: *Elf, shndx: u16, needed_size: u64) !void {
         if (other_shndx == shndx) continue;
         const other_phdr_index = self.phdr_to_shdr_table.get(@intCast(other_shndx)) orelse continue;
         const other_phdr = &self.phdrs.items[other_phdr_index];
-        if (other_phdr.p_vaddr < end_addr) continue;
-        other_shdr.sh_addr += diff;
-        other_phdr.p_vaddr += diff;
-        other_phdr.p_paddr += diff;
+        log.debug("phdr({d}) : {x} >= {x}", .{ other_phdr_index, other_phdr.p_vaddr, end_addr });
+        if (other_phdr.p_vaddr >= end_addr) {
+            other_shdr.sh_addr += diff;
+            other_phdr.p_vaddr += diff;
+            other_phdr.p_paddr += diff;
+        }
     }
 }
 
@@ -1284,6 +1293,14 @@ pub fn flushModule(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node
     try self.allocateObjects();
     self.allocateLinkerDefinedSymbols();
 
+    // Allocate synthetic sections if required.
+    if (self.got.dirty) {
+        const needed_size = self.got.size(self);
+        try self.growAllocSection(self.got_section_index.?, needed_size);
+        self.got.dirty = false;
+        self.got_addresses_dirty = true;
+    }
+
     // .bss always overlaps .data in file offset, but is zero-sized in file so it doesn't
     // get mapped by the loader
     if (self.data_section_index) |data_shndx| blk: {
@@ -1332,13 +1349,13 @@ pub fn flushModule(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node
     }
     try self.writeObjects();
 
-    if (self.got_dirty) {
+    if (self.got_addresses_dirty) {
         const shdr = &self.shdrs.items[self.got_section_index.?];
         var buffer = try std.ArrayList(u8).initCapacity(gpa, self.got.size(self));
         defer buffer.deinit();
         try self.got.writeAllEntries(self, buffer.writer());
         try self.base.file.?.pwriteAll(buffer.items, shdr.sh_offset);
-        self.got_dirty = false;
+        self.got_addresses_dirty = false;
     }
 
     // Look for entry address in objects if not set by the incremental compiler.
@@ -1562,6 +1579,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node
     assert(!self.strtab_dirty);
     assert(!self.debug_strtab_dirty);
     assert(!self.got.dirty);
+    assert(!self.got_addresses_dirty);
 }
 
 const ParseError = error{
@@ -1810,8 +1828,7 @@ fn scanRelocs(self: *Elf) !void {
         if (sym.flags.needs_got) {
             log.debug("'{s}' needs GOT", .{sym.name(self)});
             // TODO how can we tell we need to write it again, aka the entry is dirty?
-            const gop = try sym.getOrCreateGotEntry(@intCast(sym_index), self);
-            try self.got.writeEntry(self, gop.index);
+            _ = try sym.getOrCreateGotEntry(@intCast(sym_index), self);
         }
     }
 }
