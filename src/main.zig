@@ -1831,7 +1831,9 @@ fn buildOutputType(
                                     continue;
                                 }
                             }
-                            if (mem.eql(u8, linker_arg, "--build-id")) {
+                            if (mem.eql(u8, linker_arg, "--no-lld")) {
+                                use_lld = false;
+                            } else if (mem.eql(u8, linker_arg, "--build-id")) {
                                 build_id = .fast;
                             } else if (mem.eql(u8, linker_arg, "--as-needed")) {
                                 needed = false;
