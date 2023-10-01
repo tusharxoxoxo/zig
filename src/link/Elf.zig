@@ -1173,6 +1173,18 @@ pub fn flushModule(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node
 
     var system_libs = std.ArrayList(SystemLib).init(arena);
 
+    // libc++ dep
+    if (self.base.options.link_libcpp) {
+        try system_libs.ensureUnusedCapacity(2);
+        system_libs.appendAssumeCapacity(.{ .path = comp.libcxxabi_static_lib.?.full_object_path });
+        system_libs.appendAssumeCapacity(.{ .path = comp.libcxx_static_lib.?.full_object_path });
+    }
+
+    // libunwind dep
+    if (self.base.options.link_libunwind) {
+        try system_libs.append(.{ .path = comp.libunwind_static_lib.?.full_object_path });
+    }
+
     // libc dep
     self.error_flags.missing_libc = false;
     if (self.base.options.link_libc) {
