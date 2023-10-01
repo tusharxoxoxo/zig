@@ -2803,6 +2803,7 @@ fn updateDeclCode(
 
     sym.name_offset = try self.strtab.insert(gpa, decl_name);
     atom_ptr.flags.alive = true;
+    atom_ptr.flags.allocated = false;
     atom_ptr.name_offset = sym.name_offset;
     esym.st_name = sym.name_offset;
     esym.st_info |= stt_bits;
@@ -3062,6 +3063,7 @@ fn updateLazySymbol(self: *Elf, sym: link.File.LazySymbol, symbol_index: Symbol.
     local_esym.st_size = code.len;
     const atom_ptr = local_sym.atom(self).?;
     atom_ptr.flags.alive = true;
+    atom_ptr.flags.allocated = false;
     atom_ptr.name_offset = name_str_index;
     atom_ptr.alignment = required_alignment;
     atom_ptr.size = code.len;
@@ -3134,6 +3136,7 @@ pub fn lowerUnnamedConst(self: *Elf, typed_value: TypedValue, decl_index: Module
     local_esym.st_size = code.len;
     const atom_ptr = local_sym.atom(self).?;
     atom_ptr.flags.alive = true;
+    atom_ptr.flags.allocated = false;
     atom_ptr.name_offset = name_str_index;
     atom_ptr.alignment = required_alignment;
     atom_ptr.size = code.len;

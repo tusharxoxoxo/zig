@@ -136,6 +136,12 @@ pub fn allocate(self: *Atom, elf_file: *Elf) !void {
             }
             break :blk new_start_vaddr;
         } else if (elf_file.atom(last_atom_index.*)) |last| {
+            log.debug("last in shdr({d}) : atom({d}) : @{x} : size({x})", .{
+                self.outputShndx().?,
+                last.atom_index,
+                last.value,
+                last.size,
+            });
             const ideal_capacity = Elf.padToIdeal(last.size);
             const ideal_capacity_end_vaddr = last.value + ideal_capacity;
             const new_start_vaddr = self.alignment.forward(ideal_capacity_end_vaddr);
@@ -147,9 +153,10 @@ pub fn allocate(self: *Atom, elf_file: *Elf) !void {
         }
     };
 
-    log.debug("allocated atom({d}) : '{s}' at 0x{x} to 0x{x}", .{
+    log.debug("allocated atom({d}) : '{s}' in shdr({d}) at 0x{x} to 0x{x}", .{
         self.atom_index,
         self.name(elf_file),
+        self.outputShndx().?,
         self.value,
         self.value + self.size,
     });
@@ -690,8 +697,7 @@ fn format2(
     //     }
     //     try writer.writeAll(" }");
     // }
-    const gc_sections = if (elf_file.base.options.gc_sections) |gc_sections| gc_sections else false;
-    if (gc_sections and !atom.flags.alive) {
+    if (!atom.flags.alive) {
         try writer.writeAll(" : [*]");
     }
 }
@@ -700,7 +706,7 @@ pub const Index = u32;
 
 pub const Flags = packed struct {
     /// Specifies whether this atom is alive or has been garbage collected.
-    alive: bool = false,
+    alive: bool = true,
 
     /// Specifies if the atom has been visited during garbage collection.
     visited: bool = false,

@@ -191,7 +191,6 @@ fn addAtom(
     atom.file_index = self.index;
     atom.input_section_index = shndx;
     atom.output_section_index = try self.getOutputSectionIndex(elf_file, shdr);
-    atom.flags.alive = true;
     self.atoms.items[shndx] = atom_index;
 
     if (shdr.sh_flags & elf.SHF_COMPRESSED != 0) {
@@ -649,13 +648,13 @@ pub fn convertCommonSymbols(self: *Object, elf_file: *Elf) !void {
 }
 
 pub fn allocateAtoms(self: *Object, elf_file: *Elf) !void {
-    for (self.atom_slices.keys(), self.atom_slices.values()) |shndx, *slice| {
+    for (self.atom_slices.values()) |*slice| {
         // First, we calculate relative offsets within each AtomSlice,
         // and update its size and max alignment.
         slice.updateSize(elf_file);
 
         // Next, we allocate AtomSlice in the output section.
-        try slice.allocate(self, shndx, elf_file);
+        try slice.allocate(self, elf_file);
     }
 
     for (self.locals()) |local_index| {
@@ -1034,7 +1033,7 @@ pub const AtomSlice = struct {
         }
     }
 
-    pub fn allocate(slice: *AtomSlice, object: *Object, shndx: u16, elf_file: *Elf) !void {
+    pub fn allocate(slice: *AtomSlice, object: *Object, elf_file: *Elf) !void {
         if (slice.size == 0) return;
         assert(!slice.allocated);
 
@@ -1042,13 +1041,26 @@ pub const AtomSlice = struct {
         // and thus we should have different types depending on the origin: incrementally updated
         // Decl will be our current Atom, while AtomSlice will represent a chunk of data linked from
         // the object file.
-        const first_atom_index = slice.atoms.items[0];
-        const last_atom_index = slice.atoms.items[slice.atoms.items.len - 1];
+        // TODO if we don't implement the above TODO, we need to verify that first_atom_index and
+        // last_atom_index are actually alive (for GC sections in particular).
+        const first_atom_index = for (slice.atoms.items) |atom_index| {
+            if (elf_file.atom(atom_index)) |atom| {
+                if (atom.flags.alive) break atom_index;
+            }
+        } else unreachable;
+        const last_atom_index = blk: {
+            var it = std.mem.reverseIterator(slice.atoms.items);
+            while (it.next()) |atom_index| {
+                if (elf_file.atom(atom_index)) |atom| {
+                    if (atom.flags.alive) break :blk atom_index;
+                }
+            } else unreachable;
+        };
         var dummy_atom: Atom = .{};
         dummy_atom.file_index = object.index;
         dummy_atom.size = slice.size;
         dummy_atom.alignment = slice.alignment;
-        dummy_atom.output_section_index = shndx;
+        dummy_atom.output_section_index = slice.output_section_index;
         dummy_atom.atom_index = last_atom_index;
         try dummy_atom.allocate(elf_file);
 
