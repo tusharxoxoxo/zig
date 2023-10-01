@@ -31,7 +31,7 @@ flags: Flags = .{},
 extra_index: u32 = 0,
 
 pub fn isAbs(symbol: Symbol, elf_file: *Elf) bool {
-    const file_ptr = symbol.file(elf_file).?;
+    const file_ptr = symbol.file(elf_file) orelse return false;
     // if (file_ptr == .shared) return symbol.sourceSymbol(elf_file).st_shndx == elf.SHN_ABS;
     return !symbol.flags.import and symbol.atom(elf_file) == null and symbol.outputShndx() == null and
         file_ptr != .linker_defined;
@@ -70,7 +70,7 @@ pub fn file(symbol: Symbol, elf_file: *Elf) ?File {
 }
 
 pub fn elfSym(symbol: Symbol, elf_file: *Elf) elf.Elf64_Sym {
-    const file_ptr = symbol.file(elf_file).?;
+    const file_ptr = symbol.file(elf_file) orelse return Elf.null_sym;
     switch (file_ptr) {
         .zig_module => |x| return x.elfSym(symbol.esym_index).*,
         .linker_defined => |x| return x.symtab.items[symbol.esym_index],

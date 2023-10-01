@@ -438,15 +438,13 @@ pub fn allocateSegment(self: *Elf, opts: AllocateSegmentOpts) error{OutOfMemory}
     // TODO we want to keep machine code segment in the furthest memory range among all
     // segments as it is most likely to grow.
     const addr = opts.addr orelse blk: {
-        const image_base = self.calcImageBase();
         // Calculate largest VM address
         var addresses = std.ArrayList(u64).init(gpa);
         defer addresses.deinit();
         try addresses.ensureTotalCapacityPrecise(self.phdrs.items.len);
         for (self.phdrs.items) |phdr| {
             if (phdr.p_type != elf.PT_LOAD) continue;
-            const reserved_capacity: u64 = @max(phdr.p_memsz, image_base * 3) + image_base;
-            addresses.appendAssumeCapacity(phdr.p_vaddr + reserved_capacity);
+            addresses.appendAssumeCapacity(phdr.p_vaddr + phdr.p_memsz);
         }
         mem.sort(u64, addresses.items, {}, std.sort.asc(u64));
         break :blk mem.alignForward(u64, addresses.pop(), opts.alignment);
@@ -582,6 +580,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
             .size = 0,
             .alignment = self.page_size,
         });
+        self.phdrs.items[self.phdr_table_load_index.?].p_memsz = self.page_size;
         self.phdr_table_dirty = true;
     }
 
@@ -1331,6 +1330,12 @@ pub fn flushModule(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node
         phdr.p_memsz = tbss_phdr.p_vaddr + tbss_phdr.p_memsz - tdata_phdr.p_vaddr;
     }
 
+    // Dump the state for easy debugging.
+    // State can be dumped via `--debug-log link_state`.
+    if (build_options.enable_logging) {
+        state_log.debug("{}", .{self.dumpState()});
+    }
+
     // Beyond this point, everything has been allocated a virtual address and we can resolve
     // the relocations, and commit objects to file.
     if (self.zig_module_index) |index| {
@@ -1559,12 +1564,6 @@ pub fn flushModule(self: *Elf, comp: *Compilation, prog_node: *std.Progress.Node
         log.debug("flushing. no_entry_point_found = false", .{});
         self.error_flags.no_entry_point_found = false;
         try self.writeElfHeader();
-    }
-
-    // Dump the state for easy debugging.
-    // State can be dumped via `--debug-log link_state`.
-    if (build_options.enable_logging) {
-        state_log.debug("{}", .{self.dumpState()});
     }
 
     // The point of flush() is to commit changes, so in theory, nothing should
@@ -3677,7 +3676,8 @@ fn getLDMOption(target: std.Target) ?[]const u8 {
 }
 
 pub fn padToIdeal(actual_size: anytype) @TypeOf(actual_size) {
-    return actual_size +| (actual_size / ideal_factor);
+    // return actual_size +| (actual_size / ideal_factor);
+    return actual_size;
 }
 
 // Provide a blueprint of csu (c-runtime startup) objects for supported

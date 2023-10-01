@@ -1065,6 +1065,12 @@ pub const AtomSlice = struct {
         try dummy_atom.allocate(elf_file);
 
         slice.value = dummy_atom.value;
+        log.debug("allocated atom_slice({d}) : object({d}) : shdr({d}) at 0x{x}", .{
+            slice.index,
+            object.index,
+            slice.output_section_index,
+            slice.value,
+        });
 
         if (elf_file.atom(dummy_atom.prev_index)) |prev| {
             prev.next_index = first_atom_index;
