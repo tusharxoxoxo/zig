@@ -8,10 +8,8 @@ contents: []align(@alignOf(u64)) const u8,
 
 header: macho.mach_header_64 = undefined,
 
-/// Symtab and strtab might not exist for empty object files so we use an optional
-/// to signal this.
-in_symtab: ?[]align(1) const macho.nlist_64 = null,
-in_strtab: ?[]const u8 = null,
+in_symtab: std.ArrayListUnmanaged(macho.nlist_64) = .{},
+in_strtab: std.ArrayListUnmanaged(u8) = .{},
 
 /// Output symtab is sorted so that we can easily reference symbols following each
 /// other in address space.
@@ -80,7 +78,7 @@ pub fn deinit(self: *Object, gpa: Allocator) void {
     self.exec_atoms.deinit(gpa);
     gpa.free(self.name);
     gpa.free(self.contents);
-    if (self.in_symtab) |_| {
+    if (self.hasSymtab()) {
         gpa.free(self.source_symtab_lookup);
         gpa.free(self.reverse_symtab_lookup);
         gpa.free(self.source_address_lookup);
@@ -91,6 +89,8 @@ pub fn deinit(self: *Object, gpa: Allocator) void {
         gpa.free(self.globals_lookup);
         gpa.free(self.relocs_lookup);
     }
+    self.in_symtab.deinit(gpa);
+    self.in_strtab.deinit(gpa);
     self.eh_frame_relocs_lookup.deinit(gpa);
     self.eh_frame_records_lookup.deinit(gpa);
     if (self.hasUnwindRecords()) {
@@ -101,6 +101,10 @@ pub fn deinit(self: *Object, gpa: Allocator) void {
     self.relocations.deinit(gpa);
     self.section_relocs_lookup.deinit(gpa);
     self.data_in_code.deinit(gpa);
+}
+
+pub fn hasSymtab(self: Object) bool {
+    return self.in_symtab.items.len > 0;
 }
 
 pub fn parse(self: *Object, allocator: Allocator) !void {
@@ -133,19 +137,25 @@ pub fn parse(self: *Object, allocator: Allocator) !void {
         else => {},
     } else return;
 
-    self.in_symtab = @as([*]align(1) const macho.nlist_64, @ptrCast(self.contents.ptr + symtab.symoff))[0..symtab.nsyms];
-    self.in_strtab = self.contents[symtab.stroff..][0..symtab.strsize];
+    const in_symtab = @as([*]align(1) const macho.nlist_64, @ptrCast(self.contents.ptr + symtab.symoff))[0..symtab.nsyms];
+    const in_strtab = self.contents[symtab.stroff..][0..symtab.strsize];
 
-    self.symtab = try allocator.alloc(macho.nlist_64, self.in_symtab.?.len + nsects);
-    self.source_symtab_lookup = try allocator.alloc(u32, self.in_symtab.?.len);
-    self.reverse_symtab_lookup = try allocator.alloc(u32, self.in_symtab.?.len);
-    self.strtab_lookup = try allocator.alloc(u32, self.in_symtab.?.len);
-    self.globals_lookup = try allocator.alloc(i64, self.in_symtab.?.len);
-    self.atom_by_index_table = try allocator.alloc(?Atom.Index, self.in_symtab.?.len + nsects);
-    self.relocs_lookup = try allocator.alloc(Entry, self.in_symtab.?.len + nsects);
+    try self.in_symtab.ensureTotalCapacityPrecise(allocator, in_symtab.len);
+    self.in_symtab.appendUnalignedSliceAssumeCapacity(in_symtab);
+
+    try self.in_strtab.ensureTotalCapacityPrecise(allocator, in_strtab.len);
+    self.in_strtab.appendSliceAssumeCapacity(in_strtab);
+
+    self.symtab = try allocator.alloc(macho.nlist_64, self.in_symtab.items.len + nsects);
+    self.source_symtab_lookup = try allocator.alloc(u32, self.in_symtab.items.len);
+    self.reverse_symtab_lookup = try allocator.alloc(u32, self.in_symtab.items.len);
+    self.strtab_lookup = try allocator.alloc(u32, self.in_symtab.items.len);
+    self.globals_lookup = try allocator.alloc(i64, self.in_symtab.items.len);
+    self.atom_by_index_table = try allocator.alloc(?Atom.Index, self.in_symtab.items.len + nsects);
+    self.relocs_lookup = try allocator.alloc(Entry, self.in_symtab.items.len + nsects);
     // This is wasteful but we need to be able to lookup source symbol address after stripping and
     // allocating of sections.
-    self.source_address_lookup = try allocator.alloc(i64, self.in_symtab.?.len);
+    self.source_address_lookup = try allocator.alloc(i64, self.in_symtab.items.len);
     self.source_section_index_lookup = try allocator.alloc(Entry, nsects);
 
     for (self.symtab) |*sym| {
@@ -167,10 +177,10 @@ pub fn parse(self: *Object, allocator: Allocator) !void {
     // local < extern defined < undefined. Unfortunately, this is not guaranteed! For instance,
     // the GO compiler does not necessarily respect that therefore we sort immediately by type
     // and address within.
-    var sorted_all_syms = try std.ArrayList(SymbolAtIndex).initCapacity(allocator, self.in_symtab.?.len);
+    var sorted_all_syms = try std.ArrayList(SymbolAtIndex).initCapacity(allocator, self.in_symtab.items.len);
     defer sorted_all_syms.deinit();
 
-    for (self.in_symtab.?, 0..) |_, index| {
+    for (0..self.in_symtab.items.len) |index| {
         sorted_all_syms.appendAssumeCapacity(.{ .index = @as(u32, @intCast(index)) });
     }
 
@@ -204,7 +214,7 @@ pub fn parse(self: *Object, allocator: Allocator) !void {
         self.reverse_symtab_lookup[sym_id.index] = @as(u32, @intCast(i));
         self.source_address_lookup[i] = if (sym.undf()) -1 else @as(i64, @intCast(sym.n_value));
 
-        const sym_name_len = mem.sliceTo(@as([*:0]const u8, @ptrCast(self.in_strtab.?.ptr + sym.n_strx)), 0).len + 1;
+        const sym_name_len = mem.sliceTo(@as([*:0]const u8, @ptrCast(self.in_strtab.items.ptr + sym.n_strx)), 0).len + 1;
         self.strtab_lookup[i] = @as(u32, @intCast(sym_name_len));
     }
 
@@ -231,12 +241,12 @@ const SymbolAtIndex = struct {
     const Context = *const Object;
 
     fn getSymbol(self: SymbolAtIndex, ctx: Context) macho.nlist_64 {
-        return ctx.in_symtab.?[self.index];
+        return ctx.in_symtab.items[self.index];
     }
 
     fn getSymbolName(self: SymbolAtIndex, ctx: Context) []const u8 {
         const off = self.getSymbol(ctx).n_strx;
-        return mem.sliceTo(@as([*:0]const u8, @ptrCast(ctx.in_strtab.?.ptr + off)), 0);
+        return mem.sliceTo(@as([*:0]const u8, @ptrCast(ctx.in_strtab.items.ptr + off)), 0);
     }
 
     fn getSymbolSeniority(self: SymbolAtIndex, ctx: Context) u2 {
@@ -387,7 +397,7 @@ pub fn splitRegularSections(self: *Object, macho_file: *MachO, object_id: u32) !
         };
     }
 
-    if (self.in_symtab == null) {
+    if (!self.hasSymtab()) {
         for (sections, 0..) |sect, id| {
             if (sect.isDebug()) continue;
             const out_sect_id = (try Atom.getOutputSection(macho_file, sect)) orelse continue;
@@ -414,7 +424,7 @@ pub fn splitRegularSections(self: *Object, macho_file: *MachO, object_id: u32) !
     // have to infer the start of undef section in the symtab ourselves.
     const iundefsym = blk: {
         const dysymtab = self.getDysymtab() orelse {
-            var iundefsym: usize = self.in_symtab.?.len;
+            var iundefsym: usize = self.in_symtab.items.len;
             while (iundefsym > 0) : (iundefsym -= 1) {
                 const sym = self.symtab[iundefsym - 1];
                 if (sym.sect()) break;
@@ -656,7 +666,7 @@ fn cacheRelocs(self: *Object, macho_file: *MachO, atom_index: Atom.Index) !void 
         // If there was no matching symbol present in the source symtab, this means
         // we are dealing with either an entire section, or part of it, but also
         // starting at the beginning.
-        const nbase = @as(u32, @intCast(self.in_symtab.?.len));
+        const nbase = @as(u32, @intCast(self.in_symtab.items.len));
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
         break :blk sect_id;
     };
@@ -862,7 +872,7 @@ fn parseUnwindInfo(self: *Object, macho_file: *MachO, object_id: u32) !void {
 }
 
 pub fn getSourceSymbol(self: Object, index: u32) ?macho.nlist_64 {
-    const symtab = self.in_symtab.?;
+    const symtab = self.in_symtab.items;
     if (index >= symtab.len) return null;
     const mapped_index = self.source_symtab_lookup[index];
     return symtab[mapped_index];
@@ -964,7 +974,7 @@ pub fn getSectionContents(self: Object, sect: macho.section_64) []const u8 {
 }
 
 pub fn getSectionAliasSymbolIndex(self: Object, sect_id: u8) u32 {
-    const start = @as(u32, @intCast(self.in_symtab.?.len));
+    const start = @as(u32, @intCast(self.in_symtab.items.len));
     return start + sect_id;
 }
 
@@ -989,7 +999,7 @@ pub fn getRelocs(self: Object, sect_id: u8) []const macho.relocation_info {
 }
 
 pub fn getSymbolName(self: Object, index: u32) []const u8 {
-    const strtab = self.in_strtab.?;
+    const strtab = self.in_strtab.items;
     const sym = self.symtab[index];
 
     if (self.getSourceSymbol(index) == null) {

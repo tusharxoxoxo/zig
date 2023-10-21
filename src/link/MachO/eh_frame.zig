@@ -386,7 +386,7 @@ pub fn EhFrameRecord(comptime is_mutable: bool) type {
                     } else null;
                     const rel = maybe_rel orelse return addend;
                     const object = &macho_file.objects.items[object_id];
-                    const target_addr = object.in_symtab.?[rel.r_symbolnum].n_value;
+                    const target_addr = object.in_symtab.items[rel.r_symbolnum].n_value;
                     const sect = object.sections.items[object.eh_frame_sect_id.?];
                     return @intCast(sect.addr + offset - target_addr + addend);
                 },

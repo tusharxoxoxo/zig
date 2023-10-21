@@ -80,7 +80,7 @@ fn collectRoots(macho_file: *MachO, roots: *AtomTable) !void {
                 const sect_id = if (object.getSourceSymbol(atom.sym_index)) |source_sym|
                     source_sym.n_sect - 1
                 else sect_id: {
-                    const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+                    const nbase = @as(u32, @intCast(object.in_symtab.items.len));
                     const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
                     break :sect_id sect_id;
                 };
@@ -245,7 +245,7 @@ fn mark(macho_file: *MachO, roots: AtomTable, alive: *AtomTable) void {
                 const sect_id = if (object.getSourceSymbol(atom.sym_index)) |source_sym|
                     source_sym.n_sect - 1
                 else blk: {
-                    const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+                    const nbase = @as(u32, @intCast(object.in_symtab.items.len));
                     const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
                     break :blk sect_id;
                 };

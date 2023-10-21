@@ -351,7 +351,7 @@ pub fn getSectionAlias(macho_file: *MachO, atom_index: Index) ?SymbolWithLoc {
     assert(atom.getFile() != null);
 
     const object = macho_file.objects.items[atom.getFile().?];
-    const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+    const nbase = @as(u32, @intCast(object.in_symtab.items.len));
     const ntotal = @as(u32, @intCast(object.symtab.len));
     var sym_index: u32 = nbase;
     while (sym_index < ntotal) : (sym_index += 1) {
@@ -378,7 +378,7 @@ pub fn calcInnerSymbolOffset(macho_file: *MachO, atom_index: Index, sym_index: u
     const base_addr = if (object.getSourceSymbol(atom.sym_index)) |sym|
         sym.n_value
     else blk: {
-        const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+        const nbase = @as(u32, @intCast(object.in_symtab.items.len));
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
         const source_sect = object.sections.items[sect_id];
         break :blk source_sect.addr;
@@ -415,7 +415,7 @@ pub fn getRelocContext(macho_file: *MachO, atom_index: Index) RelocContext {
             .base_offset = @as(i32, @intCast(source_sym.n_value - source_sect.addr)),
         };
     }
-    const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+    const nbase = @as(u32, @intCast(object.in_symtab.items.len));
     const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
     const source_sect = object.sections.items[sect_id];
     return .{
@@ -1153,7 +1153,7 @@ pub fn getAtomCode(macho_file: *MachO, atom_index: Index) []const u8 {
         // If there was no matching symbol present in the source symtab, this means
         // we are dealing with either an entire section, or part of it, but also
         // starting at the beginning.
-        const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+        const nbase = @as(u32, @intCast(object.in_symtab.items.len));
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
         const source_sect = object.sections.items[sect_id];
         assert(!source_sect.isZerofill());
@@ -1181,7 +1181,7 @@ pub fn getAtomRelocs(macho_file: *MachO, atom_index: Index) []const macho.reloca
         // If there was no matching symbol present in the source symtab, this means
         // we are dealing with either an entire section, or part of it, but also
         // starting at the beginning.
-        const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+        const nbase = @as(u32, @intCast(object.in_symtab.items.len));
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
         break :blk sect_id;
     };

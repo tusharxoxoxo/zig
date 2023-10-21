@@ -1701,7 +1701,8 @@ fn resolveGlobalSymbol(self: *MachO, current: SymbolWithLoc) !void {
 
 fn resolveSymbolsInObject(self: *MachO, object_id: u32) !void {
     const object = &self.objects.items[object_id];
-    const in_symtab = object.in_symtab orelse return;
+    if (!object.hasSymtab()) return;
+    const in_symtab = object.in_symtab.items;
 
     log.debug("resolving symbols in '{s}'", .{object.name});
 
@@ -4016,7 +4017,7 @@ pub fn writeDataInCode(self: *MachO) !void {
             const source_addr = if (object.getSourceSymbol(atom.sym_index)) |source_sym|
                 source_sym.n_value
             else blk: {
-                const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+                const nbase = @as(u32, @intCast(object.in_symtab.items.len));
                 const source_sect_id = @as(u8, @intCast(atom.sym_index - nbase));
                 break :blk object.sections.items[source_sect_id].addr;
             };
@@ -5244,7 +5245,7 @@ pub fn logSymtab(self: *MachO) void {
     scoped_log.debug("locals:", .{});
     for (self.objects.items, 0..) |object, id| {
         scoped_log.debug("  object({d}): {s}", .{ id, object.name });
-        if (object.in_symtab == null) continue;
+        if (!object.hasSymtab()) continue;
         for (object.symtab, 0..) |sym, sym_id| {
             @memset(&buf, '_');
             scoped_log.debug("    %{d}: {s} @{x} in sect({d}), {s}", .{
