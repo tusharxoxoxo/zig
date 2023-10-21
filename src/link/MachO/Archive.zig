@@ -1,4 +1,4 @@
-file: fs.File,
+file: MachO.FileDesc,
 fat_offset: u64,
 name: []const u8,
 header: ar_hdr = undefined,
@@ -165,7 +165,7 @@ fn parseTableOfContents(self: *Archive, allocator: Allocator, reader: anytype) !
 }
 
 pub fn parseObject(self: Archive, gpa: Allocator, offset: u32) !Object {
-    const reader = self.file.reader();
+    const reader = self.file.fd.reader();
     try reader.context.seekTo(self.fat_offset + offset);
 
     const object_header = try reader.readStruct(ar_hdr);
@@ -182,21 +182,17 @@ pub fn parseObject(self: Archive, gpa: Allocator, offset: u32) !Object {
         break :name try std.fmt.allocPrint(gpa, "{s}({s})", .{ path, object_name });
     };
 
-    const object_name_len = switch (name_or_length) {
-        .Name => 0,
-        .Length => |len| len,
-    };
-    const object_size = (try object_header.size()) - object_name_len;
-    const contents = try gpa.allocWithOptions(u8, object_size, @alignOf(u64), null);
-    const amt = try reader.readAll(contents);
-    if (amt != object_size) {
-        return error.InputOutput;
-    }
-
     var object = Object{
         .name = name,
         .mtime = object_header.date() catch 0,
-        .contents = contents,
+        .file = .{
+            .fd = self.file.fd,
+            .owned = false,
+            .offset = self.fat_offset + offset + @sizeOf(ar_hdr) + switch (name_or_length) {
+                .Name => 0,
+                .Length => |n| n,
+            },
+        },
     };
 
     try object.parse(gpa);
@@ -214,4 +210,5 @@ const macho = std.macho;
 const mem = std.mem;
 
 const Allocator = mem.Allocator;
+const MachO = @import("../MachO.zig");
 const Object = @import("Object.zig");

@@ -272,7 +272,7 @@ fn markUnwindRecords(macho_file: *MachO, object_id: u32, alive: *AtomTable) void
     const object = &macho_file.objects.items[object_id];
     const cpu_arch = macho_file.base.options.target.cpu.arch;
 
-    const unwind_records = object.getUnwindRecords();
+    const unwind_records = object.unwind_records.items;
 
     for (object.exec_atoms.items) |atom_index| {
         var inner_syms_it = Atom.getInnerSymbolsIterator(macho_file, atom_index);
@@ -294,10 +294,10 @@ fn markUnwindRecords(macho_file: *MachO, object_id: u32, alive: *AtomTable) void
 
         while (inner_syms_it.next()) |sym| {
             const record_id = object.unwind_records_lookup.get(sym) orelse continue;
-            if (object.unwind_relocs_lookup[record_id].dead) continue; // already marked, nothing to do
+            if (object.unwind_relocs_lookup.items[record_id].dead) continue; // already marked, nothing to do
             if (!alive.contains(atom_index)) {
                 // Mark the record dead and continue.
-                object.unwind_relocs_lookup[record_id].dead = true;
+                object.unwind_relocs_lookup.items[record_id].dead = true;
                 if (object.eh_frame_records_lookup.get(sym)) |fde_offset| {
                     object.eh_frame_relocs_lookup.getPtr(fde_offset).?.dead = true;
                 }

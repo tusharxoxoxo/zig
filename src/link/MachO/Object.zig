@@ -2,11 +2,19 @@
 //! Each Object is fully loaded into memory for easier
 //! access into different data within.
 
+file: MachO.FileDesc,
 name: []const u8,
 mtime: u64,
-contents: []align(@alignOf(u64)) const u8,
 
 header: macho.mach_header_64 = undefined,
+
+symtab_command: ?macho.symtab_command = null,
+dysymtab_command: ?macho.dysymtab_command = null,
+dice_command: ?macho.linkedit_data_command = null,
+
+/// Platform composed from the first encountered build version type load command:
+/// either LC_BUILD_VERSION or LC_VERSION_MIN_*.
+platform: ?Platform = null,
 
 in_symtab: std.ArrayListUnmanaged(macho.nlist_64) = .{},
 in_strtab: std.ArrayListUnmanaged(u8) = .{},
@@ -42,6 +50,8 @@ relocations: std.ArrayListUnmanaged(macho.relocation_info) = .{},
 /// defined within this Object file.
 section_relocs_lookup: std.ArrayListUnmanaged(u32) = .{},
 
+section_data: std.ArrayListUnmanaged([]u8) = .{},
+
 /// Data-in-code records sorted by address.
 data_in_code: std.ArrayListUnmanaged(macho.data_in_code_entry) = .{},
 
@@ -49,11 +59,13 @@ atoms: std.ArrayListUnmanaged(Atom.Index) = .{},
 exec_atoms: std.ArrayListUnmanaged(Atom.Index) = .{},
 
 eh_frame_sect_id: ?u8 = null,
+eh_frame_data: std.ArrayListUnmanaged(u8) = .{},
 eh_frame_relocs_lookup: std.AutoArrayHashMapUnmanaged(u32, Record) = .{},
 eh_frame_records_lookup: std.AutoArrayHashMapUnmanaged(SymbolWithLoc, u32) = .{},
 
 unwind_info_sect_id: ?u8 = null,
-unwind_relocs_lookup: []Record = undefined,
+unwind_records: std.ArrayListUnmanaged(macho.compact_unwind_entry) = .{},
+unwind_relocs_lookup: std.ArrayListUnmanaged(Record) = .{},
 unwind_records_lookup: std.AutoHashMapUnmanaged(SymbolWithLoc, u32) = .{},
 
 const Entry = struct {
@@ -74,10 +86,10 @@ pub fn isObject(file: std.fs.File) bool {
 }
 
 pub fn deinit(self: *Object, gpa: Allocator) void {
+    self.file.close();
     self.atoms.deinit(gpa);
     self.exec_atoms.deinit(gpa);
     gpa.free(self.name);
-    gpa.free(self.contents);
     if (self.hasSymtab()) {
         gpa.free(self.source_symtab_lookup);
         gpa.free(self.reverse_symtab_lookup);
@@ -91,16 +103,21 @@ pub fn deinit(self: *Object, gpa: Allocator) void {
     }
     self.in_symtab.deinit(gpa);
     self.in_strtab.deinit(gpa);
+    self.eh_frame_data.deinit(gpa);
     self.eh_frame_relocs_lookup.deinit(gpa);
     self.eh_frame_records_lookup.deinit(gpa);
-    if (self.hasUnwindRecords()) {
-        gpa.free(self.unwind_relocs_lookup);
-    }
+    self.unwind_records.deinit(gpa);
+    self.unwind_relocs_lookup.deinit(gpa);
     self.unwind_records_lookup.deinit(gpa);
     self.sections.deinit(gpa);
     self.relocations.deinit(gpa);
     self.section_relocs_lookup.deinit(gpa);
     self.data_in_code.deinit(gpa);
+
+    for (self.section_data.items) |data| {
+        gpa.free(data);
+    }
+    self.section_data.deinit(gpa);
 }
 
 pub fn hasSymtab(self: Object) bool {
@@ -108,16 +125,14 @@ pub fn hasSymtab(self: Object) bool {
 }
 
 pub fn parse(self: *Object, allocator: Allocator) !void {
-    var stream = std.io.fixedBufferStream(self.contents);
-    const reader = stream.reader();
+    try self.file.preadExact(mem.asBytes(&self.header), 0);
 
-    self.header = try reader.readStruct(macho.mach_header_64);
+    const lc_buffer = try allocator.alloc(u8, self.header.sizeofcmds);
+    defer allocator.free(lc_buffer);
+    try self.file.preadExact(lc_buffer, @sizeOf(macho.mach_header_64));
 
     // Parse source sections first.
-    var it = LoadCommandIterator{
-        .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
-    };
+    var it = LoadCommandIterator{ .ncmds = self.header.ncmds, .buffer = lc_buffer };
     const sections: []align(1) const macho.section_64 = while (it.next()) |cmd| switch (cmd.cmd()) {
         .SEGMENT_64 => break cmd.getSections(),
         else => {},
@@ -127,24 +142,60 @@ pub fn parse(self: *Object, allocator: Allocator) !void {
     self.sections.appendUnalignedSliceAssumeCapacity(sections);
     const nsects = self.sections.items.len;
 
+    try self.section_data.resize(allocator, nsects);
+    @memset(self.section_data.items, &[0]u8{});
+
     // Prepopulate relocations per section lookup table.
     try self.section_relocs_lookup.resize(allocator, nsects);
     @memset(self.section_relocs_lookup.items, 0);
 
-    // Parse symtab.
-    const symtab = while (it.next()) |cmd| switch (cmd.cmd()) {
-        .SYMTAB => break cmd.cast(macho.symtab_command).?,
-        else => {},
-    } else return;
+    // Parse relevant load commands.
+    while (it.next()) |cmd| {
+        switch (cmd.cmd()) {
+            .SYMTAB => self.symtab_command = cmd.cast(macho.symtab_command),
+            .DYSYMTAB => self.dysymtab_command = cmd.cast(macho.dysymtab_command),
+            .DATA_IN_CODE => self.dice_command = cmd.cast(macho.linkedit_data_command),
+            .BUILD_VERSION,
+            .VERSION_MIN_MACOSX,
+            .VERSION_MIN_IPHONEOS,
+            .VERSION_MIN_TVOS,
+            .VERSION_MIN_WATCHOS,
+            => if (self.platform == null) {
+                self.platform = Platform.fromLoadCommand(cmd);
+            },
+            else => {},
+        }
+    }
 
-    const in_symtab = @as([*]align(1) const macho.nlist_64, @ptrCast(self.contents.ptr + symtab.symoff))[0..symtab.nsyms];
-    const in_strtab = self.contents[symtab.stroff..][0..symtab.strsize];
+    // Parse symtab.
+    if (self.symtab_command) |cmd| try self.parseSymtab(allocator, cmd);
+
+    // Parse __TEXT,__eh_frame header if one exists
+    self.eh_frame_sect_id = self.getSourceSectionIndexByName("__TEXT", "__eh_frame");
+
+    // Parse __LD,__compact_unwind header if one exists
+    self.unwind_info_sect_id = self.getSourceSectionIndexByName("__LD", "__compact_unwind");
+}
+
+fn parseSymtab(self: *Object, allocator: Allocator, symtab: macho.symtab_command) !void {
+    const symtab_buffer = try allocator.alloc(u8, symtab.nsyms * @sizeOf(macho.nlist_64));
+    defer allocator.free(symtab_buffer);
+    try self.file.preadExact(symtab_buffer, symtab.symoff);
+
+    const strtab_buffer = try allocator.alloc(u8, symtab.strsize);
+    defer allocator.free(strtab_buffer);
+    try self.file.preadExact(strtab_buffer, symtab.stroff);
+
+    const in_symtab = @as([*]align(1) const macho.nlist_64, @ptrCast(symtab_buffer))[0..symtab.nsyms];
+    const in_strtab = strtab_buffer;
 
     try self.in_symtab.ensureTotalCapacityPrecise(allocator, in_symtab.len);
     self.in_symtab.appendUnalignedSliceAssumeCapacity(in_symtab);
 
     try self.in_strtab.ensureTotalCapacityPrecise(allocator, in_strtab.len);
     self.in_strtab.appendSliceAssumeCapacity(in_strtab);
+
+    const nsects = self.sections.items.len;
 
     self.symtab = try allocator.alloc(macho.nlist_64, self.in_symtab.items.len + nsects);
     self.source_symtab_lookup = try allocator.alloc(u32, self.in_symtab.items.len);
@@ -222,16 +273,6 @@ pub fn parse(self: *Object, allocator: Allocator) !void {
     // source section index lookup for the last scanned section.
     if (section_index_lookup) |lookup| {
         self.source_section_index_lookup[prev_sect_id - 1] = lookup;
-    }
-
-    // Parse __TEXT,__eh_frame header if one exists
-    self.eh_frame_sect_id = self.getSourceSectionIndexByName("__TEXT", "__eh_frame");
-
-    // Parse __LD,__compact_unwind header if one exists
-    self.unwind_info_sect_id = self.getSourceSectionIndexByName("__LD", "__compact_unwind");
-    if (self.hasUnwindRecords()) {
-        self.unwind_relocs_lookup = try allocator.alloc(Record, self.getUnwindRecords().len);
-        @memset(self.unwind_relocs_lookup, .{ .dead = true, .reloc = .{} });
     }
 }
 
@@ -360,7 +401,7 @@ pub const SplitIntoAtomsError = error{
     EndOfStream,
     MissingEhFrameSection,
     BadDwarfCfi,
-};
+} || MachO.FileDesc.PReadError;
 
 pub fn splitIntoAtoms(self: *Object, macho_file: *MachO, object_id: u32) SplitIntoAtomsError!void {
     log.debug("splitting object({d}, {s}) into atoms", .{ object_id, self.name });
@@ -395,6 +436,11 @@ pub fn splitRegularSections(self: *Object, macho_file: *MachO, object_id: u32) !
             .n_desc = 0,
             .n_value = sect.addr,
         };
+
+        if (!sect.isZerofill()) {
+            const data = try self.getSectionContentsAlloc(gpa, sect);
+            self.section_data.items[id] = data;
+        }
     }
 
     if (!self.hasSymtab()) {
@@ -423,7 +469,7 @@ pub fn splitRegularSections(self: *Object, macho_file: *MachO, object_id: u32) !
     // Well, shit, sometimes compilers skip the dysymtab load command altogether, meaning we
     // have to infer the start of undef section in the symtab ourselves.
     const iundefsym = blk: {
-        const dysymtab = self.getDysymtab() orelse {
+        const dysymtab = self.dysymtab_command orelse {
             var iundefsym: usize = self.in_symtab.items.len;
             while (iundefsym > 0) : (iundefsym -= 1) {
                 const sym = self.symtab[iundefsym - 1];
@@ -649,7 +695,11 @@ fn filterRelocs(
 fn parseRelocs(self: *Object, gpa: Allocator, sect_id: u8) !void {
     const section = self.sections.items[sect_id];
     const start = @as(u32, @intCast(self.relocations.items.len));
-    if (self.getSourceRelocs(section)) |relocs| {
+
+    if (section.nreloc > 0) {
+        const relocs = try gpa.alloc(macho.relocation_info, section.nreloc);
+        defer gpa.free(relocs);
+        try self.file.preadExact(mem.sliceAsBytes(relocs), section.reloff);
         try self.relocations.ensureUnusedCapacity(gpa, relocs.len);
         self.relocations.appendUnalignedSliceAssumeCapacity(relocs);
         mem.sort(macho.relocation_info, self.relocations.items[start..], {}, relocGreaterThan);
@@ -700,6 +750,11 @@ fn parseEhFrameSection(self: *Object, macho_file: *MachO, object_id: u32) !void 
     const cpu_arch = macho_file.base.options.target.cpu.arch;
     try self.parseRelocs(gpa, sect_id);
     const relocs = self.getRelocs(sect_id);
+
+    const data = try self.getSectionContentsAlloc(gpa, sect);
+    defer gpa.free(data);
+    try self.eh_frame_data.ensureTotalCapacityPrecise(gpa, data.len);
+    self.eh_frame_data.appendSliceAssumeCapacity(data);
 
     var it = self.getEhFrameRecordsIterator();
     var record_count: u32 = 0;
@@ -811,9 +866,20 @@ fn parseUnwindInfo(self: *Object, macho_file: *MachO, object_id: u32) !void {
         macho_file.unwind_info_section_index = try macho_file.initSection("__TEXT", "__unwind_info", .{});
     }
 
-    const unwind_records = self.getUnwindRecords();
+    const sect = self.sections.items[sect_id];
+    const data = try self.getSectionContentsAlloc(gpa, sect);
+    defer gpa.free(data);
+    const num_entries = @divExact(data.len, @sizeOf(macho.compact_unwind_entry));
+    const uw_slice = @as([*]align(1) const macho.compact_unwind_entry, @ptrCast(data))[0..num_entries];
 
-    try self.unwind_records_lookup.ensureUnusedCapacity(gpa, @as(u32, @intCast(unwind_records.len)));
+    try self.unwind_records.ensureTotalCapacityPrecise(gpa, num_entries);
+    self.unwind_records.appendUnalignedSliceAssumeCapacity(uw_slice);
+
+    const unwind_records = self.unwind_records.items;
+
+    try self.unwind_relocs_lookup.resize(gpa, self.unwind_records.items.len);
+    @memset(self.unwind_relocs_lookup.items, .{ .dead = true, .reloc = .{} });
+    try self.unwind_records_lookup.ensureUnusedCapacity(gpa, @as(u32, @intCast(self.unwind_records.items.len)));
 
     const needs_eh_frame = for (unwind_records) |record| {
         if (UnwindInfo.UnwindEncoding.isDwarf(record.compactUnwindEncoding, cpu_arch)) break true;
@@ -832,7 +898,7 @@ fn parseUnwindInfo(self: *Object, macho_file: *MachO, object_id: u32) !void {
             offset + @sizeOf(macho.compact_unwind_entry),
         );
         assert(rel_pos.len > 0); // TODO convert to an error as the unwind info is malformed
-        self.unwind_relocs_lookup[record_id] = .{
+        self.unwind_relocs_lookup.items[record_id] = .{
             .dead = false,
             .reloc = rel_pos,
         };
@@ -847,7 +913,7 @@ fn parseUnwindInfo(self: *Object, macho_file: *MachO, object_id: u32) !void {
         });
         if (target.getFile() != object_id) {
             log.debug("unwind record {d} marked DEAD", .{record_id});
-            self.unwind_relocs_lookup[record_id].dead = true;
+            self.unwind_relocs_lookup.items[record_id].dead = true;
         } else {
             // You would think that we are done but turns out that the compilers may use
             // whichever symbol alias they want for a target symbol. This in particular
@@ -893,18 +959,12 @@ pub fn getSourceSectionIndexByName(self: Object, segname: []const u8, sectname: 
 }
 
 pub fn parseDataInCode(self: *Object, gpa: Allocator) !void {
-    var it = LoadCommandIterator{
-        .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
-    };
-    const cmd = while (it.next()) |cmd| {
-        switch (cmd.cmd()) {
-            .DATA_IN_CODE => break cmd.cast(macho.linkedit_data_command).?,
-            else => {},
-        }
-    } else return;
+    const cmd = self.dice_command orelse return;
     const ndice = @divExact(cmd.datasize, @sizeOf(macho.data_in_code_entry));
-    const dice = @as([*]align(1) const macho.data_in_code_entry, @ptrCast(self.contents.ptr + cmd.dataoff))[0..ndice];
+    const buffer = try gpa.alloc(u8, cmd.datasize);
+    defer gpa.free(buffer);
+    try self.file.preadExact(buffer, cmd.dataoff);
+    const dice = @as([*]align(1) const macho.data_in_code_entry, @ptrCast(buffer))[0..ndice];
     try self.data_in_code.ensureTotalCapacityPrecise(gpa, dice.len);
     self.data_in_code.appendUnalignedSliceAssumeCapacity(dice);
     mem.sort(macho.data_in_code_entry, self.data_in_code.items, {}, diceLessThan);
@@ -915,20 +975,7 @@ fn diceLessThan(ctx: void, lhs: macho.data_in_code_entry, rhs: macho.data_in_cod
     return lhs.offset < rhs.offset;
 }
 
-fn getDysymtab(self: Object) ?macho.dysymtab_command {
-    var it = LoadCommandIterator{
-        .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
-    };
-    while (it.next()) |cmd| {
-        switch (cmd.cmd()) {
-            .DYSYMTAB => return cmd.cast(macho.dysymtab_command).?,
-            else => {},
-        }
-    } else return null;
-}
-
-pub fn parseDwarfInfo(self: Object) DwarfInfo {
+pub fn parseDwarfInfo(self: Object, allocator: Allocator) !DwarfInfo {
     var di = DwarfInfo{
         .debug_info = &[0]u8{},
         .debug_abbrev = &[0]u8{},
@@ -938,39 +985,23 @@ pub fn parseDwarfInfo(self: Object) DwarfInfo {
         if (!sect.isDebug()) continue;
         const sectname = sect.sectName();
         if (mem.eql(u8, sectname, "__debug_info")) {
-            di.debug_info = self.getSectionContents(sect);
+            di.debug_info = try self.getSectionContentsAlloc(allocator, sect);
         } else if (mem.eql(u8, sectname, "__debug_abbrev")) {
-            di.debug_abbrev = self.getSectionContents(sect);
+            di.debug_abbrev = try self.getSectionContentsAlloc(allocator, sect);
         } else if (mem.eql(u8, sectname, "__debug_str")) {
-            di.debug_str = self.getSectionContents(sect);
+            di.debug_str = try self.getSectionContentsAlloc(allocator, sect);
         }
     }
     return di;
 }
 
-/// Returns Platform composed from the first encountered build version type load command:
-/// either LC_BUILD_VERSION or LC_VERSION_MIN_*.
-pub fn getPlatform(self: Object) ?Platform {
-    var it = LoadCommandIterator{
-        .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
-    };
-    while (it.next()) |cmd| {
-        switch (cmd.cmd()) {
-            .BUILD_VERSION,
-            .VERSION_MIN_MACOSX,
-            .VERSION_MIN_IPHONEOS,
-            .VERSION_MIN_TVOS,
-            .VERSION_MIN_WATCHOS,
-            => return Platform.fromLoadCommand(cmd),
-            else => {},
-        }
-    } else return null;
-}
-
-pub fn getSectionContents(self: Object, sect: macho.section_64) []const u8 {
-    const size = @as(usize, @intCast(sect.size));
-    return self.contents[sect.offset..][0..size];
+/// Caller owns the memory.
+pub fn getSectionContentsAlloc(self: Object, allocator: Allocator, sect: macho.section_64) ![]u8 {
+    if (sect.size == 0) return &[0]u8{};
+    const buffer = try allocator.alloc(u8, sect.size);
+    errdefer allocator.free(buffer);
+    try self.file.preadExact(buffer, sect.offset);
+    return buffer;
 }
 
 pub fn getSectionAliasSymbolIndex(self: Object, sect_id: u8) u32 {
@@ -984,11 +1015,6 @@ pub fn getSectionAliasSymbol(self: *Object, sect_id: u8) macho.nlist_64 {
 
 pub fn getSectionAliasSymbolPtr(self: *Object, sect_id: u8) *macho.nlist_64 {
     return &self.symtab[self.getSectionAliasSymbolIndex(sect_id)];
-}
-
-fn getSourceRelocs(self: Object, sect: macho.section_64) ?[]align(1) const macho.relocation_info {
-    if (sect.nreloc == 0) return null;
-    return @as([*]align(1) const macho.relocation_info, @ptrCast(self.contents.ptr + sect.reloff))[0..sect.nreloc];
 }
 
 pub fn getRelocs(self: Object, sect_id: u8) []const macho.relocation_info {
@@ -1073,23 +1099,12 @@ pub fn hasUnwindRecords(self: Object) bool {
     return self.unwind_info_sect_id != null;
 }
 
-pub fn getUnwindRecords(self: Object) []align(1) const macho.compact_unwind_entry {
-    const sect_id = self.unwind_info_sect_id orelse return &[0]macho.compact_unwind_entry{};
-    const sect = self.sections.items[sect_id];
-    const data = self.getSectionContents(sect);
-    const num_entries = @divExact(data.len, @sizeOf(macho.compact_unwind_entry));
-    return @as([*]align(1) const macho.compact_unwind_entry, @ptrCast(data))[0..num_entries];
-}
-
 pub fn hasEhFrameRecords(self: Object) bool {
     return self.eh_frame_sect_id != null;
 }
 
 pub fn getEhFrameRecordsIterator(self: Object) eh_frame.Iterator {
-    const sect_id = self.eh_frame_sect_id orelse return .{ .data = &[0]u8{} };
-    const sect = self.sections.items[sect_id];
-    const data = self.getSectionContents(sect);
-    return .{ .data = data };
+    return .{ .data = self.eh_frame_data.items };
 }
 
 pub fn hasDataInCode(self: Object) bool {

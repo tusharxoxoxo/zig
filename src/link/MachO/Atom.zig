@@ -1157,13 +1157,13 @@ pub fn getAtomCode(macho_file: *MachO, atom_index: Index) []const u8 {
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
         const source_sect = object.sections.items[sect_id];
         assert(!source_sect.isZerofill());
-        const code = object.getSectionContents(source_sect);
+        const code = object.section_data.items[sect_id];
         const code_len = @as(usize, @intCast(atom.size));
         return code[0..code_len];
     };
     const source_sect = object.sections.items[source_sym.n_sect - 1];
     assert(!source_sect.isZerofill());
-    const code = object.getSectionContents(source_sect);
+    const code = object.section_data.items[source_sym.n_sect - 1];
     const offset = @as(usize, @intCast(source_sym.n_value - source_sect.addr));
     const code_len = @as(usize, @intCast(atom.size));
     return code[offset..][0..code_len];

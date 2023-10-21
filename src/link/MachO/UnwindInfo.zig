@@ -186,12 +186,12 @@ pub fn scanRelocs(macho_file: *MachO) !void {
 
     const cpu_arch = macho_file.base.options.target.cpu.arch;
     for (macho_file.objects.items, 0..) |*object, object_id| {
-        const unwind_records = object.getUnwindRecords();
+        const unwind_records = object.unwind_records.items;
         for (object.exec_atoms.items) |atom_index| {
             var inner_syms_it = Atom.getInnerSymbolsIterator(macho_file, atom_index);
             while (inner_syms_it.next()) |sym| {
                 const record_id = object.unwind_records_lookup.get(sym) orelse continue;
-                if (object.unwind_relocs_lookup[record_id].dead) continue;
+                if (object.unwind_relocs_lookup.items[record_id].dead) continue;
                 const record = unwind_records[record_id];
                 if (!UnwindEncoding.isDwarf(record.compactUnwindEncoding, cpu_arch)) {
                     if (getPersonalityFunctionReloc(macho_file, @as(u32, @intCast(object_id)), record_id)) |rel| {
@@ -224,7 +224,7 @@ pub fn collect(info: *UnwindInfo, macho_file: *MachO) !void {
     // TODO handle dead stripping
     for (macho_file.objects.items, 0..) |*object, object_id| {
         log.debug("collecting unwind records in {s} ({d})", .{ object.name, object_id });
-        const unwind_records = object.getUnwindRecords();
+        const unwind_records = object.unwind_records.items;
 
         // Contents of unwind records does not have to cover all symbol in executable section
         // so we need insert them ourselves.
@@ -236,7 +236,7 @@ pub fn collect(info: *UnwindInfo, macho_file: *MachO) !void {
             var prev_symbol: ?SymbolWithLoc = null;
             while (inner_syms_it.next()) |symbol| {
                 var record = if (object.unwind_records_lookup.get(symbol)) |record_id| blk: {
-                    if (object.unwind_relocs_lookup[record_id].dead) continue;
+                    if (object.unwind_relocs_lookup.items[record_id].dead) continue;
                     var record = unwind_records[record_id];
 
                     if (UnwindEncoding.isDwarf(record.compactUnwindEncoding, cpu_arch)) {
@@ -673,7 +673,7 @@ pub fn write(info: *UnwindInfo, macho_file: *MachO) !void {
 fn getRelocs(macho_file: *MachO, object_id: u32, record_id: usize) []const macho.relocation_info {
     const object = &macho_file.objects.items[object_id];
     assert(object.hasUnwindRecords());
-    const rel_pos = object.unwind_relocs_lookup[record_id].reloc;
+    const rel_pos = object.unwind_relocs_lookup.items[record_id].reloc;
     const relocs = object.getRelocs(object.unwind_info_sect_id.?);
     return relocs[rel_pos.start..][0..rel_pos.len];
 }

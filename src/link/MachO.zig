@@ -749,7 +749,7 @@ pub fn parsePositional(
     defer tracy.end();
 
     if (Object.isObject(file)) {
-        try self.parseObject(file, path, ctx);
+        try self.parseObject(path, ctx);
     } else {
         try self.parseLibrary(file, path, .{
             .path = null,
@@ -759,28 +759,23 @@ pub fn parsePositional(
     }
 }
 
-fn parseObject(
-    self: *MachO,
-    file: std.fs.File,
-    path: []const u8,
-    ctx: *ParseErrorCtx,
-) ParseError!void {
+fn parseObject(self: *MachO, path: []const u8, ctx: *ParseErrorCtx) ParseError!void {
     const tracy = trace(@src());
     defer tracy.end();
 
     const gpa = self.base.allocator;
+
+    const file = try std.fs.cwd().openFile(path, .{});
+
     const mtime: u64 = mtime: {
         const stat = file.stat() catch break :mtime 0;
         break :mtime @as(u64, @intCast(@divFloor(stat.mtime, 1_000_000_000)));
     };
-    const file_stat = try file.stat();
-    const file_size = math.cast(usize, file_stat.size) orelse return error.Overflow;
-    const contents = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
 
     var object = Object{
+        .file = .{ .fd = file, .owned = true },
         .name = try gpa.dupe(u8, path),
         .mtime = mtime,
-        .contents = contents,
     };
     errdefer object.deinit(gpa);
     try object.parse(gpa);
@@ -790,7 +785,7 @@ fn parseObject(
         macho.CPU_TYPE_X86_64 => .x86_64,
         else => unreachable,
     };
-    const detected_platform = object.getPlatform();
+    const detected_platform = object.platform;
     const this_cpu_arch = self.base.options.target.cpu.arch;
     const this_platform = Platform.fromTarget(self.base.options.target);
 
@@ -893,12 +888,13 @@ fn parseArchive(
     try file.seekTo(fat_offset);
 
     var archive = Archive{
-        .file = file,
+        .file = .{ .fd = file, .owned = true, .offset = fat_offset },
         .fat_offset = fat_offset,
         .name = try gpa.dupe(u8, path),
     };
     errdefer archive.deinit(gpa);
 
+    // TODO don't use reader
     try archive.parse(gpa, file.reader());
 
     // Verify arch and platform
@@ -914,7 +910,7 @@ fn parseArchive(
             macho.CPU_TYPE_X86_64 => .x86_64,
             else => unreachable,
         };
-        const detected_platform = object.getPlatform();
+        const detected_platform = object.platform;
         const this_cpu_arch = self.base.options.target.cpu.arch;
         const this_platform = Platform.fromTarget(self.base.options.target);
 
@@ -4183,7 +4179,12 @@ fn generateSymbolStabs(
     log.debug("generating stabs for '{s}'", .{object.name});
 
     const gpa = self.base.allocator;
-    var debug_info = object.parseDwarfInfo();
+    var debug_info = try object.parseDwarfInfo(gpa);
+    defer {
+        gpa.free(debug_info.debug_info);
+        gpa.free(debug_info.debug_abbrev);
+        gpa.free(debug_info.debug_str);
+    }
 
     var lookup = DwarfInfo.AbbrevLookupTable.init(gpa);
     defer lookup.deinit();
@@ -5510,6 +5511,26 @@ pub const SymbolWithLoc = extern struct {
 
 const HotUpdateState = struct {
     mach_task: ?std.os.darwin.MachTask = null,
+};
+
+pub const FileDesc = struct {
+    // TODO Currently, it's only an actual file descriptor.
+    // In the future, incorporate mmap'd file also.
+    fd: std.fs.File,
+    owned: bool,
+    offset: u64 = 0,
+
+    pub fn close(fd: FileDesc) void {
+        if (!fd.owned) return;
+        fd.fd.close();
+    }
+
+    pub const PReadError = error{InputOutput} || std.os.PReadError;
+
+    pub fn preadExact(fd: FileDesc, buffer: []u8, off: u64) PReadError!void {
+        const amt = try fd.fd.preadAll(buffer, fd.offset + off);
+        if (amt != buffer.len) return error.InputOutput;
+    }
 };
 
 /// When allocating, the ideal_capacity is calculated by
