@@ -217,7 +217,7 @@ fn scanRelocs(
     const object = macho_file.objects.items[atom.getFile().?];
 
     const base_offset = if (object.getSourceSymbol(atom.sym_index)) |source_sym| blk: {
-        const source_sect = object.getSourceSection(source_sym.n_sect - 1);
+        const source_sect = object.sections.items[source_sym.n_sect - 1];
         break :blk @as(i32, @intCast(source_sym.n_value - source_sect.addr));
     } else 0;
 

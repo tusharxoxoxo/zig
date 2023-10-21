@@ -84,7 +84,7 @@ fn collectRoots(macho_file: *MachO, roots: *AtomTable) !void {
                     const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
                     break :sect_id sect_id;
                 };
-                const source_sect = object.getSourceSection(sect_id);
+                const source_sect = object.sections.items[sect_id];
                 if (source_sect.isDontDeadStrip()) break :blk true;
                 switch (source_sect.type()) {
                     macho.S_MOD_INIT_FUNC_POINTERS,
@@ -249,7 +249,7 @@ fn mark(macho_file: *MachO, roots: AtomTable, alive: *AtomTable) void {
                     const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
                     break :blk sect_id;
                 };
-                const source_sect = object.getSourceSection(sect_id);
+                const source_sect = object.sections.items[sect_id];
 
                 if (source_sect.isDontDeadStripIfReferencesLive()) {
                     if (refersLive(macho_file, atom_index, alive.*)) {
@@ -376,7 +376,7 @@ fn markEhFrameRecords(macho_file: *MachO, object_id: u32, atom_index: Atom.Index
                 }
             },
             .x86_64 => {
-                const sect = object.getSourceSection(object.eh_frame_sect_id.?);
+                const sect = object.sections.items[object.eh_frame_sect_id.?];
                 const lsda_ptr = fde.getLsdaPointer(cie, .{
                     .base_addr = sect.addr,
                     .base_offset = fde_offset,

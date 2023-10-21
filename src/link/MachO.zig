@@ -4018,7 +4018,7 @@ pub fn writeDataInCode(self: *MachO) !void {
             else blk: {
                 const nbase = @as(u32, @intCast(object.in_symtab.?.len));
                 const source_sect_id = @as(u8, @intCast(atom.sym_index - nbase));
-                break :blk object.getSourceSection(source_sect_id).addr;
+                break :blk object.sections.items[source_sect_id].addr;
             };
             const filtered_dice = filterDataInCode(dice, source_addr, source_addr + atom.size);
             const base = math.cast(u32, sym.n_value - text_sect_header.addr + text_sect_header.offset) orelse

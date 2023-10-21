@@ -380,7 +380,7 @@ pub fn calcInnerSymbolOffset(macho_file: *MachO, atom_index: Index, sym_index: u
     else blk: {
         const nbase = @as(u32, @intCast(object.in_symtab.?.len));
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
-        const source_sect = object.getSourceSection(sect_id);
+        const source_sect = object.sections.items[sect_id];
         break :blk source_sect.addr;
     };
     return source_sym.n_value - base_addr;
@@ -409,7 +409,7 @@ pub fn getRelocContext(macho_file: *MachO, atom_index: Index) RelocContext {
 
     const object = macho_file.objects.items[atom.getFile().?];
     if (object.getSourceSymbol(atom.sym_index)) |source_sym| {
-        const source_sect = object.getSourceSection(source_sym.n_sect - 1);
+        const source_sect = object.sections.items[source_sym.n_sect - 1];
         return .{
             .base_addr = @as(i64, @intCast(source_sect.addr)),
             .base_offset = @as(i32, @intCast(source_sym.n_value - source_sect.addr)),
@@ -417,7 +417,7 @@ pub fn getRelocContext(macho_file: *MachO, atom_index: Index) RelocContext {
     }
     const nbase = @as(u32, @intCast(object.in_symtab.?.len));
     const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
-    const source_sect = object.getSourceSection(sect_id);
+    const source_sect = object.sections.items[sect_id];
     return .{
         .base_addr = @as(i64, @intCast(source_sect.addr)),
         .base_offset = 0,
@@ -937,7 +937,7 @@ fn resolveRelocsArm64(
 
                 if (rel.r_extern == 0) {
                     const base_addr = if (target.sym_index >= object.source_address_lookup.len)
-                        @as(i64, @intCast(object.getSourceSection(@as(u8, @intCast(rel.r_symbolnum - 1))).addr))
+                        @as(i64, @intCast(object.sections.items[@as(u8, @intCast(rel.r_symbolnum - 1))].addr))
                     else
                         object.source_address_lookup[target.sym_index];
                     ptr_addend -= base_addr;
@@ -1092,7 +1092,7 @@ fn resolveRelocsX86(
 
                 if (rel.r_extern == 0) {
                     const base_addr = if (target.sym_index >= object.source_address_lookup.len)
-                        @as(i64, @intCast(object.getSourceSection(@as(u8, @intCast(rel.r_symbolnum - 1))).addr))
+                        @as(i64, @intCast(object.sections.items[@as(u8, @intCast(rel.r_symbolnum - 1))].addr))
                     else
                         object.source_address_lookup[target.sym_index];
                     addend += @as(i32, @intCast(@as(i64, @intCast(context.base_addr)) + rel.r_address + 4 -
@@ -1115,7 +1115,7 @@ fn resolveRelocsX86(
 
                 if (rel.r_extern == 0) {
                     const base_addr = if (target.sym_index >= object.source_address_lookup.len)
-                        @as(i64, @intCast(object.getSourceSection(@as(u8, @intCast(rel.r_symbolnum - 1))).addr))
+                        @as(i64, @intCast(object.sections.items[@as(u8, @intCast(rel.r_symbolnum - 1))].addr))
                     else
                         object.source_address_lookup[target.sym_index];
                     addend -= base_addr;
@@ -1155,13 +1155,13 @@ pub fn getAtomCode(macho_file: *MachO, atom_index: Index) []const u8 {
         // starting at the beginning.
         const nbase = @as(u32, @intCast(object.in_symtab.?.len));
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
-        const source_sect = object.getSourceSection(sect_id);
+        const source_sect = object.sections.items[sect_id];
         assert(!source_sect.isZerofill());
         const code = object.getSectionContents(source_sect);
         const code_len = @as(usize, @intCast(atom.size));
         return code[0..code_len];
     };
-    const source_sect = object.getSourceSection(source_sym.n_sect - 1);
+    const source_sect = object.sections.items[source_sym.n_sect - 1];
     assert(!source_sect.isZerofill());
     const code = object.getSectionContents(source_sect);
     const offset = @as(usize, @intCast(source_sym.n_value - source_sect.addr));
@@ -1185,7 +1185,7 @@ pub fn getAtomRelocs(macho_file: *MachO, atom_index: Index) []const macho.reloca
         const sect_id = @as(u8, @intCast(atom.sym_index - nbase));
         break :blk sect_id;
     };
-    const source_sect = object.getSourceSection(source_sect_id);
+    const source_sect = object.sections.items[source_sect_id];
     assert(!source_sect.isZerofill());
     const relocs = object.getRelocs(source_sect_id);
     return relocs[cache.start..][0..cache.len];

@@ -163,7 +163,7 @@ pub fn write(macho_file: *MachO, unwind_info: *UnwindInfo) !void {
                         const cie_record = eh_records.get(
                             eh_frame_offset + 4 - fde_record.getCiePointer(),
                         ).?;
-                        const eh_frame_sect = object.getSourceSection(object.eh_frame_sect_id.?);
+                        const eh_frame_sect = object.sections.items[object.eh_frame_sect_id.?];
                         const source_lsda_ptr = fde_record.getLsdaPointer(cie_record, .{
                             .base_addr = eh_frame_sect.addr,
                             .base_offset = fde_record_offset,
@@ -387,7 +387,7 @@ pub fn EhFrameRecord(comptime is_mutable: bool) type {
                     const rel = maybe_rel orelse return addend;
                     const object = &macho_file.objects.items[object_id];
                     const target_addr = object.in_symtab.?[rel.r_symbolnum].n_value;
-                    const sect = object.getSourceSection(object.eh_frame_sect_id.?);
+                    const sect = object.sections.items[object.eh_frame_sect_id.?];
                     return @intCast(sect.addr + offset - target_addr + addend);
                 },
                 .x86_64 => return addend,
