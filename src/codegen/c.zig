@@ -7,7 +7,7 @@ const log = std.log.scoped(.c);
 const link = @import("../link.zig");
 const Module = @import("../Module.zig");
 const Compilation = @import("../Compilation.zig");
-const Value = @import("../value.zig").Value;
+const Value = @import("../Value.zig");
 const Type = @import("../type.zig").Type;
 const TypedValue = @import("../TypedValue.zig");
 const C = link.File.C;
@@ -673,7 +673,6 @@ pub const DeclGen = struct {
         const ptr = mod.intern_pool.indexToKey(ptr_val).ptr;
         switch (ptr.addr) {
             .decl => |d| try dg.renderDeclValue(writer, ptr_ty, ptr_val.toValue(), d, location),
-            .mut_decl => |md| try dg.renderDeclValue(writer, ptr_ty, ptr_val.toValue(), md.decl, location),
             .anon_decl => |anon_decl| try dg.renderAnonDeclValue(writer, ptr_ty, ptr_val.toValue(), anon_decl, location),
             .int => |int| {
                 try writer.writeByte('(');
@@ -1212,7 +1211,6 @@ pub const DeclGen = struct {
                 };
                 switch (ptr.addr) {
                     .decl => |d| try dg.renderDeclValue(writer, ptr_ty, ptr_val, d, ptr_location),
-                    .mut_decl => |md| try dg.renderDeclValue(writer, ptr_ty, ptr_val, md.decl, ptr_location),
                     .anon_decl => |decl_val| try dg.renderAnonDeclValue(writer, ptr_ty, ptr_val, decl_val, ptr_location),
                     .int => |int| {
                         try writer.writeAll("((");

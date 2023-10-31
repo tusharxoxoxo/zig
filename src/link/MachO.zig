@@ -5648,7 +5648,7 @@ const TableSection = @import("table_section.zig").TableSection;
 const Trie = @import("MachO/Trie.zig");
 const Type = @import("../type.zig").Type;
 const TypedValue = @import("../TypedValue.zig");
-const Value = @import("../value.zig").Value;
+const Value = @import("../Value.zig");
 const Alignment = Atom.Alignment;
 
 pub const DebugSymbols = @import("MachO/DebugSymbols.zig");

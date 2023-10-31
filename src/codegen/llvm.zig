@@ -20,7 +20,7 @@ const Package = @import("../Package.zig");
 const TypedValue = @import("../TypedValue.zig");
 const Air = @import("../Air.zig");
 const Liveness = @import("../Liveness.zig");
-const Value = @import("../value.zig").Value;
+const Value = @import("../Value.zig");
 const Type = @import("../type.zig").Type;
 const LazySrcLoc = Module.LazySrcLoc;
 const x86_64_abi = @import("../arch/x86_64/abi.zig");
@@ -3875,7 +3875,6 @@ pub const Object = struct {
                 };
                 const ptr_val = switch (ptr.addr) {
                     .decl => |decl| try o.lowerDeclRefValue(ptr_ty, decl),
-                    .mut_decl => |mut_decl| try o.lowerDeclRefValue(ptr_ty, mut_decl.decl),
                     .anon_decl => |anon_decl| try o.lowerAnonDeclRef(ptr_ty, anon_decl),
                     .int => |int| try o.lowerIntAsPtr(int),
                     .eu_payload,
@@ -4343,7 +4342,6 @@ pub const Object = struct {
         const ptr = ip.indexToKey(ptr_val.toIntern()).ptr;
         return switch (ptr.addr) {
             .decl => |decl| try o.lowerParentPtrDecl(decl),
-            .mut_decl => |mut_decl| try o.lowerParentPtrDecl(mut_decl.decl),
             .anon_decl => |ad| try o.lowerAnonDeclRef(ad.orig_ty.toType(), ad),
             .int => |int| try o.lowerIntAsPtr(int),
             .eu_payload => |eu_ptr| {

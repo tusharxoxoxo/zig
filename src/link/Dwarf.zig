@@ -2762,4 +2762,4 @@ const Module = @import("../Module.zig");
 const InternPool = @import("../InternPool.zig");
 const StringTable = @import("strtab.zig").StringTable;
 const Type = @import("../type.zig").Type;
-const Value = @import("../value.zig").Value;
+const Value = @import("../Value.zig");

@@ -17,7 +17,7 @@ const Ast = std.zig.Ast;
 const Module = @This();
 const Compilation = @import("Compilation.zig");
 const Cache = std.Build.Cache;
-const Value = @import("value.zig").Value;
+const Value = @import("Value.zig");
 const Type = @import("type.zig").Type;
 const TypedValue = @import("TypedValue.zig");
 const Package = @import("Package.zig");
@@ -3602,8 +3602,8 @@ pub fn semaFile(mod: *Module, file: *File) SemaError!void {
     defer sema_arena.deinit();
     const sema_arena_allocator = sema_arena.allocator();
 
-    var comptime_mutable_decls = std.ArrayList(Decl.Index).init(gpa);
-    defer comptime_mutable_decls.deinit();
+    var comptime_memory: Sema.ComptimeMemory = .{};
+    defer comptime_memory.deinit(gpa);
 
     var sema: Sema = .{
         .mod = mod,
@@ -3617,7 +3617,7 @@ pub fn semaFile(mod: *Module, file: *File) SemaError!void {
         .fn_ret_ty = Type.void,
         .fn_ret_ty_ies = null,
         .owner_func_index = .none,
-        .comptime_mutable_decls = &comptime_mutable_decls,
+        .comptime_memory = &comptime_memory,
     };
     defer sema.deinit();
 
@@ -3630,10 +3630,6 @@ pub fn semaFile(mod: *Module, file: *File) SemaError!void {
     };
     // TODO: figure out InternPool removals for incremental compilation
     //errdefer ip.remove(struct_ty);
-    for (comptime_mutable_decls.items) |decl_index| {
-        const decl = mod.declPtr(decl_index);
-        _ = try decl.internValue(mod);
-    }
 
     new_namespace.ty = struct_ty.toType();
     new_decl.val = struct_ty.toValue();
@@ -3717,8 +3713,8 @@ fn semaDecl(mod: *Module, decl_index: Decl.Index) !bool {
     var analysis_arena = std.heap.ArenaAllocator.init(gpa);
     defer analysis_arena.deinit();
 
-    var comptime_mutable_decls = std.ArrayList(Decl.Index).init(gpa);
-    defer comptime_mutable_decls.deinit();
+    var comptime_memory: Sema.ComptimeMemory = .{};
+    defer comptime_memory.deinit(gpa);
 
     var sema: Sema = .{
         .mod = mod,
@@ -3732,7 +3728,7 @@ fn semaDecl(mod: *Module, decl_index: Decl.Index) !bool {
         .fn_ret_ty = Type.void,
         .fn_ret_ty_ies = null,
         .owner_func_index = .none,
-        .comptime_mutable_decls = &comptime_mutable_decls,
+        .comptime_memory = &comptime_memory,
         .builtin_type_target_index = builtin_type_target_index,
     };
     defer sema.deinit();
@@ -3759,10 +3755,6 @@ fn semaDecl(mod: *Module, decl_index: Decl.Index) !bool {
     // We'll do some other bits with the Sema. Clear the type target index just
     // in case they analyze any type.
     sema.builtin_type_target_index = .none;
-    for (comptime_mutable_decls.items) |ct_decl_index| {
-        const ct_decl = mod.declPtr(ct_decl_index);
-        _ = try ct_decl.internValue(mod);
-    }
     const align_src: LazySrcLoc = .{ .node_offset_var_decl_align = 0 };
     const section_src: LazySrcLoc = .{ .node_offset_var_decl_section = 0 };
     const address_space_src: LazySrcLoc = .{ .node_offset_var_decl_addrspace = 0 };
@@ -4692,8 +4684,8 @@ pub fn analyzeFnBody(mod: *Module, func_index: InternPool.Index, arena: Allocato
     const decl_index = func.owner_decl;
     const decl = mod.declPtr(decl_index);
 
-    var comptime_mutable_decls = std.ArrayList(Decl.Index).init(gpa);
-    defer comptime_mutable_decls.deinit();
+    var comptime_memory: Sema.ComptimeMemory = .{};
+    defer comptime_memory.deinit(gpa);
 
     // In the case of a generic function instance, this is the type of the
     // instance, which has comptime parameters elided. In other words, it is
@@ -4716,7 +4708,7 @@ pub fn analyzeFnBody(mod: *Module, func_index: InternPool.Index, arena: Allocato
         .fn_ret_ty_ies = null,
         .owner_func_index = func_index,
         .branch_quota = @max(func.branchQuota(ip).*, Sema.default_branch_quota),
-        .comptime_mutable_decls = &comptime_mutable_decls,
+        .comptime_memory = &comptime_memory,
     };
     defer sema.deinit();
 
@@ -4849,11 +4841,6 @@ pub fn analyzeFnBody(mod: *Module, func_index: InternPool.Index, arena: Allocato
             error.ComptimeBreak => @panic("zig compiler bug: ComptimeBreak"),
             else => |e| return e,
         };
-    }
-
-    for (comptime_mutable_decls.items) |ct_decl_index| {
-        const ct_decl = mod.declPtr(ct_decl_index);
-        _ = try ct_decl.internValue(mod);
     }
 
     // Copy the block into place and mark that as the main block.
@@ -5807,7 +5794,6 @@ pub fn markReferencedDeclsAlive(mod: *Module, val: Value) Allocator.Error!void {
             switch (ptr.addr) {
                 .decl => |decl| try mod.markDeclIndexAlive(decl),
                 .anon_decl => {},
-                .mut_decl => |mut_decl| try mod.markDeclIndexAlive(mut_decl.decl),
                 .int, .comptime_field => {},
                 .eu_payload, .opt_payload => |parent| try mod.markReferencedDeclsAlive(parent.toValue()),
                 .elem, .field => |base_index| try mod.markReferencedDeclsAlive(base_index.base.toValue()),
